@@ -290,11 +290,18 @@ export async function applyPaneSettingFieldValue(
     return;
   }
 
-  let nextSettings: Record<string, unknown> = {
+  const currentSettings = {
     ...(descriptor.rawSettings ?? descriptor.context.settings),
     ...clearOnChange,
-    [field.key]: value,
   };
+  let nextSettings: Record<string, unknown> = descriptor.settingsDef.applyValue
+    ? await descriptor.settingsDef.applyValue(
+      currentSettings,
+      field,
+      value,
+      descriptor.context,
+    )
+    : { ...currentSettings, [field.key]: value };
 
   if (descriptor.pane.paneId === "portfolio-list") {
     nextSettings = cleanPortfolioPaneSettings(nextSettings);
