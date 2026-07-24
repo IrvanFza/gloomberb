@@ -130,6 +130,20 @@ export const WebBox = forwardRef<HTMLDivElement, Record<string, unknown> & { chi
       document.addEventListener("mouseup", handleDocumentUp);
     };
 
+    const handleMouseDownCapture = (event: MouseEvent) => {
+      const editableSelector = "input, textarea, [contenteditable='true']";
+      const directTarget = event.target instanceof HTMLElement ? event.target : null;
+      const focusTarget = directTarget?.closest<HTMLElement>(editableSelector) ?? null;
+      callMouseHandler(propsRef.current.onMouseDownCapture, event, "down");
+      if (focusTarget && !event.defaultPrevented) {
+        const restoreTargetFocus = () => {
+          if (focusTarget.isConnected) focusTarget.focus({ preventScroll: true });
+        };
+        queueMicrotask(restoreTargetFocus);
+        globalThis.requestAnimationFrame?.(restoreTargetFocus);
+      }
+    };
+
     const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
       callMouseHandler(propsRef.current.onMouseScroll, event, "scroll");
     };
@@ -148,6 +162,7 @@ export const WebBox = forwardRef<HTMLDivElement, Record<string, unknown> & { chi
         {...cleanDomProps(props)}
         data-gloom-hover-bg={hoverBackgroundColor ? "true" : undefined}
         ref={elementRef}
+        onMouseDownCapture={typeof props.onMouseDownCapture === "function" ? handleMouseDownCapture : undefined}
         onMouseDown={handleMouseDown}
         onMouseOver={handleMouseOver}
         onMouseMove={(event) => scheduleFrameMouseHandler(event, "move")}
