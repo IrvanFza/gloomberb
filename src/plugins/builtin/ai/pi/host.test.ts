@@ -7,6 +7,7 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import { AI_PROVIDER_IDS, type AiProviderId } from "../providers";
+import type { AiAgentHistoryMessage } from "../agent-history";
 import { parseScreenerResponse } from "../screener/contract";
 import type {
   RemoteControlRequest,
@@ -423,5 +424,77 @@ describe("Pi AI host conversation history", () => {
     }).done;
 
     expect(output).toBe("Current answer");
+  });
+
+  test("returns and replays native tool-call and tool-result history", async () => {
+    const fixture = createHostFixture(async () => ({
+      ok: true,
+      data: { paneId: "pane-1" },
+    }));
+    fixture.faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("gloomberb_remote", {
+        request: {
+          type: "call",
+          operation: "pane.open",
+          input: { paneType: "watchlist" },
+        },
+      }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("Opened the pane."),
+    ]);
+    let agentMessages: AiAgentHistoryMessage[] = [];
+
+    await fixture.host.run({
+      providerId: "anthropic",
+      prompt: "Open a watchlist pane",
+      outputMode: "structured",
+      onAgentMessages: (messages) => {
+        agentMessages = messages;
+      },
+    }).done;
+
+    expect(agentMessages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "assistant",
+    ]);
+    expect(agentMessages[1]).toMatchObject({
+      role: "assistant",
+      content: [expect.objectContaining({
+        type: "toolCall",
+        name: "gloomberb_remote",
+      })],
+    });
+    expect(agentMessages[2]).toMatchObject({
+      role: "toolResult",
+      toolName: "gloomberb_remote",
+      content: [{ type: "text", text: '{"ok":true,"data":{"paneId":"pane-1"}}' }],
+    });
+
+    fixture.faux.setResponses([
+      (context) => {
+        expect(context.messages.map((message) => message.role)).toEqual([
+          "user",
+          "assistant",
+          "toolResult",
+          "assistant",
+          "user",
+        ]);
+        expect(context.messages[2]).toMatchObject({
+          role: "toolResult",
+          toolName: "gloomberb_remote",
+        });
+        return fauxAssistantMessage("Closed the same pane.");
+      },
+    ]);
+
+    const output = await fixture.host.run({
+      providerId: "anthropic",
+      prompt: "Close the pane you just opened",
+      outputMode: "structured",
+      agentMessages,
+    }).done;
+
+    expect(output).toBe("Closed the same pane.");
   });
 });

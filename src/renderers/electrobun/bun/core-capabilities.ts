@@ -18,6 +18,10 @@ import {
   type AiConversationMessage,
   type AiRuntimeAuthType,
 } from "../../../plugins/builtin/ai/runner";
+import {
+  normalizeAiAgentHistory,
+  type AiAgentHistoryMessage,
+} from "../../../plugins/builtin/ai/agent-history";
 import type { BrokerAdapter } from "../../../types/broker";
 import type { AppConfig, BrokerInstanceConfig } from "../../../types/config";
 
@@ -313,6 +317,15 @@ function createAiRunnerCapability(options: CoreCapabilityOptions): PluginCapabil
       return { role, content };
     });
   };
+  const optionalAgentMessages = (value: unknown): AiAgentHistoryMessage[] | undefined => {
+    if (value === undefined || value === null) return undefined;
+    if (!Array.isArray(value)) throw new Error("AI agent messages must be an array.");
+    const messages = normalizeAiAgentHistory(value);
+    if (messages.length !== value.length) {
+      throw new Error("AI agent message history is invalid.");
+    }
+    return messages;
+  };
 
   return {
     id: AI_RUNNER_CAPABILITY_ID,
@@ -355,6 +368,8 @@ function createAiRunnerCapability(options: CoreCapabilityOptions): PluginCapabil
         const providerId = await requireCatalogProvider(input.providerId);
         const prompt = requireString(input.prompt, "AI prompt");
         const messages = optionalMessages(input.messages);
+        const agentMessages = optionalAgentMessages(input.agentMessages);
+        let completedAgentMessages: AiAgentHistoryMessage[] | undefined;
         const modelId = optionalString(input.modelId);
         const providerStatus = await aiHost.checkStatus?.(providerId);
         if (providerStatus && !providerStatus.authenticated) {
@@ -369,6 +384,7 @@ function createAiRunnerCapability(options: CoreCapabilityOptions): PluginCapabil
           providerId,
           prompt,
           messages,
+          agentMessages,
           modelId: modelId ?? undefined,
           outputMode: input.outputMode === "structured" || input.outputMode === "screener"
             ? input.outputMode
@@ -376,10 +392,17 @@ function createAiRunnerCapability(options: CoreCapabilityOptions): PluginCapabil
           onChunk: (output) => {
             if (!disposed) emit({ kind: "chunk", output });
           },
+          onAgentMessages: (nextMessages) => {
+            completedAgentMessages = nextMessages;
+          },
         });
 
         controller.done.then((output) => {
-          if (!disposed) emit({ kind: "done", output });
+          if (!disposed) emit({
+            kind: "done",
+            output,
+            ...(completedAgentMessages ? { agentMessages: completedAgentMessages } : {}),
+          });
         }).catch((error) => {
           if (disposed) return;
           if (isAiRunCancelled(error)) {

@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   appendLocalAgentMessages,
+  appendLocalAgentTranscript,
   buildLocalAgentHistory,
   buildLocalAgentRequestPrompt,
+  buildLocalAgentTranscript,
   createLocalAgentThread,
   EMPTY_LOCAL_AGENT_WORKSPACE,
   normalizeLocalAgentWorkspace,
@@ -128,11 +130,19 @@ describe("local agent workspace model", () => {
         { id: "a3", role: "assistant" as const, content: "Failed answer", createdAt: 5, status: "error" as const },
         { id: "a4", role: "assistant" as const, content: "Legacy loading answer", createdAt: 6 },
       ],
+      agentMessages: [],
     };
 
     expect(buildLocalAgentHistory(thread)).toEqual([
       { role: "user", content: "First question" },
       { role: "assistant", content: "Completed answer" },
+    ]);
+    expect(buildLocalAgentTranscript(thread)).toEqual([
+      { role: "user", content: "First question" },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Completed answer" }],
+      },
     ]);
     expect(buildLocalAgentRequestPrompt("Current question", [])).toBe(
       "Current user request:\nCurrent question",
@@ -164,5 +174,54 @@ describe("local agent workspace model", () => {
 
     expect(normalized.threads).toHaveLength(1);
     expect(normalized.threads[0]?.messages.map((message) => message.content)).toEqual(["First", "Second"]);
+  });
+
+  test("persists native tool history and prefers it over flattened display messages", () => {
+    const created = createLocalAgentThread(EMPTY_LOCAL_AGENT_WORKSPACE, "anthropic", {
+      id: "thread-1",
+      now: 1,
+    });
+    const withDisplay = appendLocalAgentMessages(created, "thread-1", [
+      { id: "u1", role: "user", content: "Open a pane", createdAt: 2 },
+      { id: "a1", role: "assistant", content: "Opened it", createdAt: 3, status: "complete" },
+    ]);
+    const withTranscript = appendLocalAgentTranscript(withDisplay, "thread-1", [
+      { role: "user", content: "Current user request:\nOpen a pane" },
+      {
+        role: "assistant",
+        content: [{
+          type: "toolCall",
+          id: "tool-1",
+          name: "gloomberb_remote",
+          arguments: { request: { type: "call", operation: "pane.open" } },
+        }],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "tool-1",
+        toolName: "gloomberb_remote",
+        content: [{ type: "text", text: '{"ok":true}' }],
+        isError: false,
+      },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Opened it" }],
+      },
+    ]);
+    const normalized = normalizeLocalAgentWorkspace(withTranscript);
+    const thread = normalized.threads[0];
+    if (!thread) throw new Error("Expected a normalized thread");
+
+    expect(buildLocalAgentTranscript(thread).map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "toolResult",
+      "assistant",
+    ]);
+    expect(buildLocalAgentTranscript(thread)[2]).toMatchObject({
+      role: "toolResult",
+      toolCallId: "tool-1",
+      content: [{ type: "text", text: '{"ok":true}' }],
+    });
   });
 });

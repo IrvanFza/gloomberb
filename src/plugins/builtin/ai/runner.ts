@@ -7,6 +7,8 @@ import {
   type AiProviderId,
   type AiProviderStatus,
 } from "./providers";
+import type { AiAgentHistoryMessage } from "./agent-history";
+import { withDeadline } from "../../../utils/async-deadline";
 
 export class AiRunCancelledError extends Error {
   constructor() {
@@ -103,8 +105,10 @@ export interface AiRunHost {
     providerId: AiProviderId;
     prompt: string;
     messages?: AiConversationMessage[];
+    agentMessages?: AiAgentHistoryMessage[];
     modelId?: string;
     onChunk?: (output: string) => void;
+    onAgentMessages?: (messages: AiAgentHistoryMessage[]) => void;
     outputMode?: AiRunOutputMode;
   }): AiRunController;
   checkStatus?(providerId: AiProviderId): Promise<AiProviderStatusResult>;
@@ -161,6 +165,32 @@ function publishCatalog(catalog: AiRuntimeCatalog): void {
 
 export function setAiRunHost(host: AiRunHost | null): void {
   configuredHost = host;
+}
+
+export async function installAiRunHost(
+  host: AiRunHost,
+  options: {
+    catalogTimeoutMs: number;
+    timeoutMessage: string;
+    onCatalogError?: (error: unknown) => void;
+  },
+): Promise<AiRuntimeCatalog> {
+  setAiRunHost(host);
+  const emptyCatalog: AiRuntimeCatalog = { providers: [], accounts: [], models: [] };
+  const catalog = await withDeadline(
+    Promise.resolve().then(() => host.getCatalog?.() ?? emptyCatalog),
+    options.catalogTimeoutMs,
+    options.timeoutMessage,
+  ).catch((error) => {
+    try {
+      options.onCatalogError?.(error);
+    } catch {
+      // Logging must not turn optional provider discovery into a startup failure.
+    }
+    return emptyCatalog;
+  });
+  setAiRuntimeCatalog(catalog);
+  return getAiRuntimeCatalog();
 }
 
 export function setAiRuntimeCatalog(catalog: AiRuntimeCatalog): void {
@@ -247,15 +277,19 @@ export function runAiPrompt({
   providerId,
   prompt,
   messages,
+  agentMessages,
   modelId,
   onChunk,
+  onAgentMessages,
   outputMode,
 }: {
   providerId: string;
   prompt: string;
   messages?: AiConversationMessage[];
+  agentMessages?: AiAgentHistoryMessage[];
   modelId?: string;
   onChunk?: (output: string) => void;
+  onAgentMessages?: (messages: AiAgentHistoryMessage[]) => void;
   outputMode?: AiRunOutputMode;
 }): AiRunController {
   if (!configuredHost) {
@@ -279,8 +313,10 @@ export function runAiPrompt({
     providerId: canonicalId,
     prompt,
     messages,
+    agentMessages,
     modelId,
     onChunk,
+    onAgentMessages,
     outputMode,
   });
 }

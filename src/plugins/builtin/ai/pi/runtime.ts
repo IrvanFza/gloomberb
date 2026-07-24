@@ -30,6 +30,7 @@ import {
   isAiProviderId,
   type AiProviderId,
 } from "../providers";
+import type { AiAgentHistoryMessage } from "../agent-history";
 import { PiFileCredentialStore } from "./credential-store";
 import { PiFileModelsStore } from "./models-store";
 import { createGloomberbPiModels, type PiProviderFactory } from "./providers";
@@ -165,6 +166,7 @@ export interface PiCreateAgentRequest {
   modelId?: string;
   systemPrompt?: string;
   messages?: PiConversationMessage[];
+  agentMessages?: AiAgentHistoryMessage[];
   tools?: AgentTool[];
   thinkingLevel?: AgentThinkingLevel;
   agentOptions?: Omit<AgentOptions, "initialState" | "streamFn">;
@@ -260,6 +262,48 @@ function toPiMessages(
       model: model.id,
       usage: EMPTY_USAGE,
       stopReason: "stop",
+      timestamp: timestamp + index,
+    };
+  });
+}
+
+function toPiAgentMessages(
+  messages: readonly AiAgentHistoryMessage[] | undefined,
+  model: Model<Api>,
+): Message[] {
+  const timestamp = Date.now();
+  return (messages ?? []).map((message, index) => {
+    if (message.role === "user") {
+      return {
+        role: "user",
+        content: message.content,
+        timestamp: timestamp + index,
+      };
+    }
+    if (message.role === "toolResult") {
+      return {
+        role: "toolResult",
+        toolCallId: message.toolCallId,
+        toolName: message.toolName,
+        content: message.content.map((content) => ({ ...content })),
+        isError: message.isError,
+        timestamp: timestamp + index,
+      };
+    }
+    return {
+      role: "assistant",
+      content: message.content.map((content) => (
+        content.type === "toolCall"
+          ? { ...content, arguments: { ...content.arguments } }
+          : { ...content }
+      )),
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: EMPTY_USAGE,
+      stopReason: message.content.some((content) => content.type === "toolCall")
+        ? "toolUse"
+        : "stop",
       timestamp: timestamp + index,
     };
   });
@@ -520,7 +564,10 @@ export class PiAiRuntime {
         systemPrompt: request.systemPrompt ?? "",
         model,
         thinkingLevel: request.thinkingLevel ?? "off",
-        messages: toPiMessages(request.messages, model),
+        messages: [
+          ...toPiMessages(request.messages, model),
+          ...toPiAgentMessages(request.agentMessages, model),
+        ],
         tools: request.tools ?? [],
       },
     });
@@ -559,7 +606,13 @@ export class PiAiRuntime {
         const finalAssistant = resultMessages.findLast(isAssistantMessage);
         const finalText = finalAssistant ? assistantText(finalAssistant) : cumulativeText;
         if (finalText && finalText !== cumulativeText) request.onChunk?.(finalText);
-        return { text: finalText, messages: resultMessages };
+        return {
+          text: finalText,
+          messages: [
+            { role: "user", content: request.prompt, timestamp: Date.now() },
+            ...resultMessages,
+          ],
+        };
       } catch (error) {
         if (cancelled || isPiRunCancelled(error)) throw new PiRunCancelledError();
         if (error instanceof PiRuntimeError) throw error;

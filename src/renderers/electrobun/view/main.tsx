@@ -88,7 +88,7 @@ async function boot() {
   installElectrobunCloudApiFetchTransport();
   installElectrobunUpdateHost();
   const init = await measurePerfAsync("startup.electrobun.backend-init", () => backendInitPromise);
-  await installElectrobunAiHost();
+  installElectrobunAiHost();
   const desktopSnapshot = init.windowKind === "detached" && init.paneId && init.desktopSnapshot
     ? prepareDetachedSnapshot(init.desktopSnapshot, init.paneId)
     : init.desktopSnapshot;

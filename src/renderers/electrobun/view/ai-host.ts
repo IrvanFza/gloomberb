@@ -4,14 +4,17 @@ import {
 } from "../../../capabilities";
 import {
   AiRunCancelledError,
-  setAiRunHost,
-  setAiRuntimeCatalog,
+  installAiRunHost,
   type AiAuthProgressEvent,
+  type AiRunHost,
   type AiRuntimeAuthType,
   type AiRuntimeCatalog,
 } from "../../../plugins/builtin/ai/runner";
+import { debugLog } from "../../../utils/debug-log";
 import { backendRequest, onCapabilityEvent } from "./backend-rpc";
 
+const AI_STARTUP_READINESS_TIMEOUT_MS = 5_000;
+const aiHostLog = debugLog.createLogger("electrobun-ai-host");
 let nextRunId = 1;
 
 function connectProvider(
@@ -61,15 +64,8 @@ function connectProvider(
   return done;
 }
 
-export async function installElectrobunAiHost(): Promise<void> {
-  const catalog = await backendRequest<AiRuntimeCatalog>("capability.invoke", {
-    capabilityId: AI_RUNNER_CAPABILITY_ID,
-    operationId: "getCatalog",
-    payload: {},
-  });
-
-  setAiRuntimeCatalog(catalog);
-  setAiRunHost({
+export function installElectrobunAiHost(): void {
+  const host: AiRunHost = {
     getCatalog() {
       return backendRequest("capability.invoke", {
         capabilityId: AI_RUNNER_CAPABILITY_ID,
@@ -94,7 +90,16 @@ export async function installElectrobunAiHost(): Promise<void> {
         payload: { providerId },
       });
     },
-    run({ providerId, prompt, messages, modelId, onChunk, outputMode }) {
+    run({
+      providerId,
+      prompt,
+      messages,
+      agentMessages,
+      modelId,
+      onChunk,
+      onAgentMessages,
+      outputMode,
+    }) {
       const subscriptionId = `ai-run:${nextRunId++}`;
       let disposed = false;
       let settled = false;
@@ -128,7 +133,10 @@ export async function installElectrobunAiHost(): Promise<void> {
             onChunk?.(event.output);
             break;
           case "done":
-            settle(() => resolveDone(event.output));
+            settle(() => {
+              if (event.agentMessages) onAgentMessages?.(event.agentMessages);
+              resolveDone(event.output);
+            });
             break;
           case "cancelled":
             settle(() => rejectDone(new AiRunCancelledError()));
@@ -151,6 +159,7 @@ export async function installElectrobunAiHost(): Promise<void> {
           providerId,
           prompt,
           messages,
+          agentMessages,
           modelId,
           outputMode,
         },
@@ -172,5 +181,18 @@ export async function installElectrobunAiHost(): Promise<void> {
         },
       };
     },
+  };
+  void installAiRunHost(host, {
+    catalogTimeoutMs: AI_STARTUP_READINESS_TIMEOUT_MS,
+    timeoutMessage: "In-app AI provider discovery timed out during desktop startup",
+    onCatalogError(error) {
+      aiHostLog.warn("In-app AI provider discovery could not finish during desktop startup", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  }).catch((error) => {
+    aiHostLog.warn("In-app AI providers could not be initialized", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
 }

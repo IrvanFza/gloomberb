@@ -1,4 +1,8 @@
 import { migrateLegacyAiProviderId, type AiProviderId } from "../providers";
+import {
+  normalizeAiAgentHistory,
+  type AiAgentHistoryMessage,
+} from "../agent-history";
 
 export type LocalAgentProviderId = string;
 
@@ -30,6 +34,7 @@ export interface LocalAgentThread {
   createdAt: number;
   updatedAt: number;
   messages: LocalAgentMessage[];
+  agentMessages: AiAgentHistoryMessage[];
 }
 
 export interface LocalAgentWorkspaceState {
@@ -49,6 +54,7 @@ export const EMPTY_LOCAL_AGENT_WORKSPACE: LocalAgentWorkspaceState = {
 
 const MAX_THREADS = 50;
 const MAX_MESSAGES_PER_THREAD = 100;
+const MAX_AGENT_MESSAGES_PER_THREAD = 300;
 const LEGACY_PROVIDER_TITLES: Record<string, string> = {
   anthropic: "Claude",
   claude: "Claude",
@@ -133,6 +139,7 @@ export function normalizeLocalAgentWorkspace(value: unknown): LocalAgentWorkspac
           .map(normalizeMessage)
           .filter((message): message is LocalAgentMessage => message !== null)
           .slice(-MAX_MESSAGES_PER_THREAD),
+        agentMessages: trimAgentMessages(normalizeAiAgentHistory(thread.agentMessages)),
       }))
       .slice(0, MAX_THREADS)
     : [];
@@ -158,6 +165,7 @@ export function createLocalAgentThread(
     createdAt: now,
     updatedAt: now,
     messages: [],
+    agentMessages: [],
   };
   return {
     activeThreadId: id,
@@ -246,6 +254,42 @@ export function buildLocalAgentHistory(
   return thread.messages
     .filter((message) => message.role === "user" || message.status === "complete")
     .map(({ role, content }) => ({ role, content }));
+}
+
+function trimAgentMessages(messages: AiAgentHistoryMessage[]): AiAgentHistoryMessage[] {
+  if (messages.length <= MAX_AGENT_MESSAGES_PER_THREAD) return messages;
+  const tail = messages.slice(-MAX_AGENT_MESSAGES_PER_THREAD);
+  const firstUserIndex = tail.findIndex((message) => message.role === "user");
+  return firstUserIndex > 0 ? tail.slice(firstUserIndex) : tail;
+}
+
+export function buildLocalAgentTranscript(
+  thread: LocalAgentThread,
+): AiAgentHistoryMessage[] {
+  if (thread.agentMessages.length > 0) return thread.agentMessages;
+  return buildLocalAgentHistory(thread).map((message) => (
+    message.role === "user"
+      ? message
+      : {
+          role: "assistant",
+          content: [{ type: "text", text: message.content }],
+        }
+  ));
+}
+
+export function appendLocalAgentTranscript(
+  state: LocalAgentWorkspaceState,
+  threadId: string,
+  messages: AiAgentHistoryMessage[],
+): LocalAgentWorkspaceState {
+  if (messages.length === 0) return state;
+  return updateLocalAgentThread(state, threadId, (thread) => ({
+    ...thread,
+    agentMessages: trimAgentMessages([
+      ...thread.agentMessages,
+      ...normalizeAiAgentHistory(messages),
+    ]),
+  }));
 }
 
 export function buildLocalAgentRequestPrompt(

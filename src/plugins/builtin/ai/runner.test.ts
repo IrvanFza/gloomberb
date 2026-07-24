@@ -4,6 +4,7 @@ import {
   disconnectAiRuntimeProvider,
   getAiRuntimeCatalog,
   getAiRuntimeCatalogSnapshot,
+  installAiRunHost,
   runAiPrompt,
   setAiRunHost,
   setAiRuntimeCatalog,
@@ -116,6 +117,26 @@ describe("AI runtime catalog", () => {
 });
 
 describe("AI runner", () => {
+  test("installs the run host before best-effort catalog discovery settles", async () => {
+    const catalogErrors: unknown[] = [];
+    const installation = installAiRunHost({
+      run: () => ({ done: Promise.resolve("available"), cancel() {} }),
+      getCatalog: () => new Promise(() => {}),
+    }, {
+      catalogTimeoutMs: 5,
+      timeoutMessage: "AI discovery timed out",
+      onCatalogError: (error) => catalogErrors.push(error),
+    });
+
+    await expect(runAiPrompt({
+      providerId: "anthropic",
+      prompt: "hello",
+    }).done).resolves.toBe("available");
+    await expect(installation).resolves.toEqual({ providers: [], accounts: [], models: [] });
+    expect(catalogErrors).toHaveLength(1);
+    expect(catalogErrors[0]).toMatchObject({ message: "AI discovery timed out" });
+  });
+
   test("delegates canonical provider id, model, and structured history to the native host", async () => {
     type RunOptions = Parameters<AiRunHost["run"]>[0];
     const received: RunOptions[] = [];
@@ -151,8 +172,10 @@ describe("AI runner", () => {
         { role: "user", content: "Earlier request" },
         { role: "assistant", content: "Earlier response" },
       ],
+      agentMessages: undefined,
       modelId: "gpt-5.6-sol",
       onChunk: undefined,
+      onAgentMessages: undefined,
       outputMode: "structured",
     }]);
     expect(cancelled).toBe(true);

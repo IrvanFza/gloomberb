@@ -9,6 +9,7 @@ import type {
   RemoteMarketDataRequest,
 } from "../../../../remote/types";
 import type { AiProviderId } from "../providers";
+import { normalizeAiAgentHistory } from "../agent-history";
 import {
   AiRunCancelledError,
   type AiAuthProgressEvent,
@@ -491,6 +492,7 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
             modelId: runOptions.modelId,
             prompt: runOptions.prompt,
             messages: runOptions.messages,
+            agentMessages: runOptions.agentMessages,
             systemPrompt: SCREENER_AGENT_SYSTEM_PROMPT,
             tools: [
               createScreenerMarketDataTool({
@@ -521,6 +523,7 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
             modelId: runOptions.modelId,
             prompt: runOptions.prompt,
             messages: runOptions.messages,
+            agentMessages: runOptions.agentMessages,
             systemPrompt: NATIVE_AGENT_SYSTEM_PROMPT,
             tools: [createRemoteTool({
               appKind: options.appKind,
@@ -530,7 +533,10 @@ export function createPiAiHost(options: CreatePiAiHostOptions): AiRunHost {
             onChunk: runOptions.onChunk,
           });
           return {
-            done: run.done.then((result) => result.text).catch((error) => {
+            done: run.done.then((result) => {
+              runOptions.onAgentMessages?.(normalizeAiAgentHistory(result.messages));
+              return result.text;
+            }).catch((error) => {
               if (isPiRunCancelled(error)) throw new AiRunCancelledError();
               throw error;
             }),

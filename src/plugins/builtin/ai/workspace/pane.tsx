@@ -26,6 +26,7 @@ import {
   usePluginState,
 } from "../../../runtime";
 import { buildTickerAiContext } from "../ticker-context";
+import type { AiAgentHistoryMessage } from "../agent-history";
 import { resolveDefaultAiProviderId, type AiProvider } from "../providers";
 import { useAiRuntimeProviders } from "../use-runtime-providers";
 import {
@@ -46,8 +47,9 @@ import {
 import {
   EMPTY_LOCAL_AGENT_WORKSPACE,
   appendLocalAgentMessages,
-  buildLocalAgentHistory,
+  appendLocalAgentTranscript,
   buildLocalAgentRequestPrompt,
+  buildLocalAgentTranscript,
   createLocalAgentThread,
   normalizeLocalAgentWorkspace,
   removeLocalAgentMessages,
@@ -456,6 +458,10 @@ export function LocalAgentWorkspacePane({ paneId, focused, width, height }: Pane
     const assistantMessageId = crypto.randomUUID();
     const attachmentMetadata = attachments.map(({ content: _content, ...metadata }) => metadata);
     const prompt = buildLocalAgentRequestPrompt(text, attachments);
+    const priorAgentMessages = buildLocalAgentTranscript(activeThread);
+    const transcriptPrefix = activeThread.agentMessages.length > 0
+      ? []
+      : priorAgentMessages;
     updateWorkspace((current) => appendLocalAgentMessages(current, activeThread.id, [{
       id: userMessageId,
       role: "user",
@@ -471,11 +477,12 @@ export function LocalAgentWorkspacePane({ paneId, focused, width, height }: Pane
     setStreamingOutput("");
 
     let streamedOutput = "";
+    let completedAgentMessages: AiAgentHistoryMessage[] | null = null;
     try {
       const controller = runAiPrompt({
         providerId: provider.id,
         prompt,
-        messages: buildLocalAgentHistory(activeThread),
+        agentMessages: priorAgentMessages,
         modelId: activeSelection.modelId ?? undefined,
         outputMode: "structured",
         onChunk: (output) => {
@@ -483,28 +490,48 @@ export function LocalAgentWorkspacePane({ paneId, focused, width, height }: Pane
           streamedOutput = output;
           setStreamingOutput(streamedOutput);
         },
+        onAgentMessages: (messages) => {
+          completedAgentMessages = messages;
+        },
       });
       runRef.current = { controller, threadId: activeThread.id, assistantMessageId };
       const output = await controller.done;
       if (!mountedRef.current) return;
       setRunningMessageId(null);
       setStreamingOutput("");
-      updateWorkspace((current) => appendLocalAgentMessages(current, activeThread.id, [{
-        id: assistantMessageId,
-        role: "assistant",
-        content: output,
-        createdAt: Date.now(),
-        status: "complete",
-      }]));
-    } catch (error) {
-      if (isAiRunCancelled(error)) {
-        updateWorkspace((current) => appendLocalAgentMessages(current, activeThread.id, [{
+      const transcriptDelta = completedAgentMessages?.length
+        ? completedAgentMessages
+        : [
+            { role: "user" as const, content: prompt },
+            {
+              role: "assistant" as const,
+              content: [{ type: "text" as const, text: output }],
+            },
+          ];
+      updateWorkspace((current) => appendLocalAgentTranscript(
+        appendLocalAgentMessages(current, activeThread.id, [{
           id: assistantMessageId,
           role: "assistant",
-          content: streamedOutput || "Cancelled before a response was received.",
+          content: output,
           createdAt: Date.now(),
-          status: "cancelled",
-        }]));
+          status: "complete",
+        }]),
+        activeThread.id,
+        [...transcriptPrefix, ...transcriptDelta],
+      ));
+    } catch (error) {
+      if (isAiRunCancelled(error)) {
+        updateWorkspace((current) => appendLocalAgentTranscript(
+          appendLocalAgentMessages(current, activeThread.id, [{
+            id: assistantMessageId,
+            role: "assistant",
+            content: streamedOutput || "Cancelled before a response was received.",
+            createdAt: Date.now(),
+            status: "cancelled",
+          }]),
+          activeThread.id,
+          [...transcriptPrefix, { role: "user", content: prompt }],
+        ));
       } else if (!streamedOutput) {
         updateWorkspace((current) => removeLocalAgentMessages(
           current,
@@ -519,13 +546,17 @@ export function LocalAgentWorkspacePane({ paneId, focused, width, height }: Pane
         }
       } else {
         const message = error instanceof Error ? error.message : `${provider.name} failed.`;
-        updateWorkspace((current) => appendLocalAgentMessages(current, activeThread.id, [{
-          id: assistantMessageId,
-          role: "assistant",
-          content: `${streamedOutput}\n\nError: ${message}`,
-          createdAt: Date.now(),
-          status: "error",
-        }]));
+        updateWorkspace((current) => appendLocalAgentTranscript(
+          appendLocalAgentMessages(current, activeThread.id, [{
+            id: assistantMessageId,
+            role: "assistant",
+            content: `${streamedOutput}\n\nError: ${message}`,
+            createdAt: Date.now(),
+            status: "error",
+          }]),
+          activeThread.id,
+          [...transcriptPrefix, { role: "user", content: prompt }],
+        ));
         if (mountedRef.current) setStatusMessage(message);
       }
     } finally {
