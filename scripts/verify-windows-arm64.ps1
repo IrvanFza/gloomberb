@@ -8,8 +8,9 @@ $BundledNativeDir = Join-Path $BundleDir "Resources\gloomberb-tui\node_modules\@
 $InstallDir = Join-Path $env:TEMP "GloomberbArm64Install-$PID"
 $InstallLog = Join-Path $env:TEMP "gloomberb-arm64-install-$PID.log"
 $UninstallLog = Join-Path $env:TEMP "gloomberb-arm64-uninstall-$PID.log"
+$GuiStdoutLog = Join-Path $env:TEMP "gloomberb-arm64-gui-stdout-$PID.log"
+$GuiStderrLog = Join-Path $env:TEMP "gloomberb-arm64-gui-stderr-$PID.log"
 $DesktopProfileDir = Join-Path $env:LOCALAPPDATA "com.vincelwt.gloomberb"
-$DesktopHome = Join-Path $env:TEMP "GloomberbArm64Home-$PID"
 
 function Assert-CommandSucceeds {
   param(
@@ -20,36 +21,6 @@ function Assert-CommandSucceeds {
   & $Path @Arguments
   if ($LASTEXITCODE -ne 0) {
     throw "Command failed with exit code $LASTEXITCODE`: $Path $($Arguments -join ' ')"
-  }
-}
-
-function Disable-InstalledDesktopUpdates {
-  param([string]$InstallDir)
-
-  $VersionPath = Join-Path $InstallDir "Resources\version.json"
-  if (-not (Test-Path $VersionPath)) {
-    throw "Installed desktop version metadata was not found: $VersionPath"
-  }
-
-  $VersionInfo = Get-Content $VersionPath -Raw | ConvertFrom-Json
-  $VersionInfo.channel = "dev"
-  $VersionInfo.baseUrl = ""
-  $VersionInfo |
-    ConvertTo-Json -Depth 8 |
-    Set-Content -Path $VersionPath -Encoding UTF8
-}
-
-function Restore-EnvironmentVariable {
-  param(
-    [string]$Name,
-    [AllowNull()]
-    [string]$Value
-  )
-
-  if ($null -eq $Value) {
-    Remove-Item -Path "Env:$Name" -ErrorAction SilentlyContinue
-  } else {
-    Set-Item -Path "Env:$Name" -Value $Value
   }
 }
 
@@ -74,8 +45,6 @@ Assert-CommandSucceeds $BundledCli @("help")
 
 $GuiProcess = $null
 $PackageProcessIds = @()
-$PreviousHome = $env:HOME
-$PreviousUserProfile = $env:USERPROFILE
 
 try {
   if (Test-Path $InstallDir) {
@@ -110,16 +79,14 @@ try {
   Assert-CommandSucceeds $InstalledCli @("__gloomberb-smoke-opentui-native")
   Assert-CommandSucceeds $InstalledCli @("help")
 
-  Disable-InstalledDesktopUpdates -InstallDir $InstallDir
   Remove-Item -Path $DesktopProfileDir -Recurse -Force -ErrorAction SilentlyContinue
-  New-Item -ItemType Directory -Force -Path $DesktopHome | Out-Null
 
-  $env:HOME = $DesktopHome
-  $env:USERPROFILE = $DesktopHome
   $env:ELECTROBUN_CONSOLE = "1"
   $GuiProcess = Start-Process `
     -FilePath $InstalledLauncher `
     -WorkingDirectory (Join-Path $InstallDir "bin") `
+    -RedirectStandardOutput $GuiStdoutLog `
+    -RedirectStandardError $GuiStderrLog `
     -PassThru
   Start-Sleep -Seconds 15
   $GuiProcess.Refresh()
@@ -130,9 +97,13 @@ try {
   )
   $PackageProcessIds = @($PackageProcesses | Select-Object -ExpandProperty ProcessId)
   if ($GuiProcess.HasExited -and $GuiProcess.ExitCode -ne 0) {
+    Get-Content $GuiStdoutLog -ErrorAction SilentlyContinue
+    Get-Content $GuiStderrLog -ErrorAction SilentlyContinue
     throw "Windows ARM64 desktop GUI exited with code $($GuiProcess.ExitCode)"
   }
   if ($GuiProcess.HasExited -and $PackageProcesses.Count -eq 0) {
+    Get-Content $GuiStdoutLog -ErrorAction SilentlyContinue
+    Get-Content $GuiStderrLog -ErrorAction SilentlyContinue
     throw "Windows ARM64 desktop GUI did not remain running after launch"
   }
 
@@ -160,7 +131,5 @@ try {
 
   Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $DesktopProfileDir -Recurse -Force -ErrorAction SilentlyContinue
-  Restore-EnvironmentVariable "HOME" $PreviousHome
-  Restore-EnvironmentVariable "USERPROFILE" $PreviousUserProfile
-  Remove-Item -Path $DesktopHome -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -Path $GuiStdoutLog, $GuiStderrLog -Force -ErrorAction SilentlyContinue
 }
