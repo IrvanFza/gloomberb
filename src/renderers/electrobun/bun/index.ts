@@ -1,5 +1,4 @@
 import Electrobun, { ApplicationMenu, BrowserView, BrowserWindow, Utils } from "electrobun/bun";
-import { appendFileSync } from "fs";
 import {
   APP_SESSION_ID,
   APP_SESSION_SCHEMA_VERSION,
@@ -46,7 +45,9 @@ import { DesktopStateBroadcaster } from "./desktop/state-broadcaster";
 import { DesktopDetachedWindowManager } from "./desktop/detached-windows";
 import { handleDesktopHostRequest } from "./desktop/host-requests";
 import { handleDesktopWorkspaceRequest } from "./desktop/workspace/requests";
+import { handleDesktopBackendRequest } from "./desktop/backend-requests";
 import { resolveDesktopLiveStream } from "./desktop/media";
+import { initializeDesktopBackend } from "./desktop/initialization";
 import { applyWindowsCustomChrome } from "./desktop/windows-custom-chrome";
 import { applyWindowsWindowIcon } from "./desktop/windows-icons";
 import {
@@ -63,25 +64,6 @@ type DesktopRpc = ReturnType<typeof BrowserView.defineRPC<ElectrobunDesktopRpcSc
 console.log = (...args) => console.error(...args);
 console.info = (...args) => console.error(...args);
 console.warn = (...args) => console.error(...args);
-
-const startupLogPath = process.env.GLOOMBERB_STARTUP_LOG;
-
-function logStartup(message: string): void {
-  if (!startupLogPath) return;
-  try {
-    appendFileSync(startupLogPath, `${new Date().toISOString()} ${message}\n`);
-  } catch {
-    // Startup diagnostics must never interfere with the application.
-  }
-}
-
-logStartup("backend module evaluated");
-process.on("uncaughtException", (error) => {
-  logStartup(`uncaught exception\n${summarizeError(error)}`);
-});
-process.on("unhandledRejection", (error) => {
-  logStartup(`unhandled rejection\n${summarizeError(error)}`);
-});
 
 setConfigStoreHost(nodeConfigStoreHost);
 setNativeIbkrGatewayModuleLoader(() => import("../../../plugins/ibkr/gateway/service/native"));
@@ -408,9 +390,6 @@ async function initialize(
   rpc: DesktopRpc,
   payload: Record<string, unknown>,
 ) {
-  logStartup("loading desktop backend initialization");
-  const { initializeDesktopBackend } = await import("./desktop/initialization");
-  logStartup("desktop backend initialization loaded");
   const init = await initializeDesktopBackend({
     getCurrentConfig: () => currentConfig,
     getCurrentServices: () => services,
@@ -496,7 +475,6 @@ async function handleBackendRequest(
     });
   }
 
-  const { handleDesktopBackendRequest } = await import("./desktop/backend-requests");
   const backendResult = await handleDesktopBackendRequest({
     clearCurrentConfig: () => {
       currentConfig = null;
@@ -587,17 +565,14 @@ ApplicationMenu.on("application-menu-clicked", (event: unknown) => {
 });
 
 installApplicationMenu();
-logStartup("application menu installed");
 
 const mainRpc = createWindowRpc(MAIN_WINDOW_RPC_KEY);
-logStartup("main RPC created");
 const initialMainWindowFrame = normalizeWindowFrameWithMinimum(
   defaultMainWindowFrame(),
   defaultMainWindowFrame(),
   MAIN_WINDOW_MIN_SIZE,
 );
 
-logStartup(`creating main window with ${desktopWindowRenderer()} renderer`);
 mainWindow = new BrowserWindow({
   title: "Gloomberb",
   frame: initialMainWindowFrame,
@@ -609,14 +584,10 @@ mainWindow = new BrowserWindow({
   navigationRules: JSON.stringify(["views://*"]),
   sandbox: false,
 });
-logStartup("main window created");
 applyWindowsWindowIcon("Gloomberb");
-logStartup("window icon applied");
 applyWindowsCustomChrome("Gloomberb");
-logStartup("custom chrome applied");
 updateWindowFrameCache(mainWindow, initialMainWindowFrame, MAIN_WINDOW_MIN_SIZE);
 detachedWindowManager.focusWindowForRpcKey(MAIN_WINDOW_RPC_KEY);
-logStartup("main window focused");
 (mainWindow as any).on?.("move", (event: WindowMoveEvent) => {
   applyWindowMoveEvent(mainWindow, event);
 });
