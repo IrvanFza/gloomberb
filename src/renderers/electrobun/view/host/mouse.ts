@@ -60,6 +60,7 @@ export function cellMouseEvent(event: MouseLikeEvent, type?: string) {
       ctrl: event.ctrlKey || event.metaKey,
     },
     scroll: resolveScroll(event),
+    isDefaultPrevented: () => event.defaultPrevented,
     preventDefault: () => event.preventDefault(),
     stopPropagation: () => event.stopPropagation(),
   };

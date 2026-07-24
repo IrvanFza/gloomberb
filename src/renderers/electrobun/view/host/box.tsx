@@ -130,6 +130,10 @@ export const WebBox = forwardRef<HTMLDivElement, Record<string, unknown> & { chi
       document.addEventListener("mouseup", handleDocumentUp);
     };
 
+    const handleMouseDownCapture = (event: MouseEvent) => {
+      callMouseHandler(propsRef.current.onMouseDownCapture, event, "down");
+    };
+
     const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
       callMouseHandler(propsRef.current.onMouseScroll, event, "scroll");
     };
@@ -148,6 +152,7 @@ export const WebBox = forwardRef<HTMLDivElement, Record<string, unknown> & { chi
         {...cleanDomProps(props)}
         data-gloom-hover-bg={hoverBackgroundColor ? "true" : undefined}
         ref={elementRef}
+        onMouseDownCapture={typeof props.onMouseDownCapture === "function" ? handleMouseDownCapture : undefined}
         onMouseDown={handleMouseDown}
         onMouseOver={handleMouseOver}
         onMouseMove={(event) => scheduleFrameMouseHandler(event, "move")}

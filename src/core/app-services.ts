@@ -4,13 +4,12 @@ import { TickerRepository } from "../data/ticker-repository";
 import { MarketDataCoordinator, setSharedMarketDataCoordinator } from "../market-data/coordinator";
 import { NewsService } from "../news/aggregator";
 import { setSharedNewsService } from "../news/hooks";
-import { getLoadablePlugins } from "../plugins/catalog";
-import type { LoadedExternalPlugin } from "../plugins/loader";
 import { PluginRegistry } from "../plugins/registry";
 import { AssetDataRouter } from "../sources/provider-router";
 import { assetDataProvider, newsProvider } from "../capabilities";
 import type { AppConfig } from "../types/config";
 import type { DataProvider } from "../types/data-provider";
+import type { GloomPlugin } from "../types/plugin";
 import { debugLog } from "../utils/debug-log";
 import { measurePerf, measurePerfAsync } from "../utils/perf-marks";
 import { setIbkrPortfolioPerformanceResourceStore } from "../plugins/ibkr/portfolio-performance";
@@ -31,13 +30,13 @@ export interface AppServices {
 
 export function createAppServices({
   config,
-  externalPlugins,
+  plugins,
 }: {
   config: AppConfig;
-  externalPlugins: LoadedExternalPlugin[];
+  plugins: readonly GloomPlugin[];
 }): AppServices {
   servicesLog.info("create services start", {
-    externalPluginCount: externalPlugins.length,
+    pluginCount: plugins.length,
     brokerInstanceCount: config.brokerInstances.length,
   });
   const dbPath = join(config.dataDir, ".gloomberb-cache.db");
@@ -68,7 +67,6 @@ export function createAppServices({
   setSharedNewsService(newsService);
   setSharedMarketDataCoordinator(marketData);
 
-  const plugins = getLoadablePlugins(externalPlugins);
   const pluginReadyPromises: Promise<void>[] = [];
   for (const plugin of plugins) {
     pluginReadyPromises.push(measurePerfAsync("startup.services.register-plugin", () => (

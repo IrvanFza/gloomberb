@@ -32,6 +32,7 @@ import type { AppSessionSnapshot } from "./core/state/session-persistence";
 import type { MarketDataCoordinator } from "./market-data/coordinator";
 import { createAppNotifier } from "./notifications/app-notifier";
 import { createAppServices } from "./core/app-services";
+import { getLoadablePlugins } from "./plugins/catalog";
 import { useBrokerImportRuntime } from "./app/runtime/broker-import";
 import { useDesktopDeepLinkRuntime } from "./app/runtime/desktop-deeplink";
 import { useDesktopApplicationMenuRuntime } from "./app/runtime/desktop-menu";
@@ -431,7 +432,10 @@ export function App({
 
   const services = useMemo(() => {
     return measurePerf("startup.app.create-services", () => (
-      createAppServices({ config, externalPlugins })
+      createAppServices({
+        config,
+        plugins: getLoadablePlugins(externalPlugins),
+      })
     ), {
       externalPluginCount: externalPlugins.length,
       disabledPluginCount: config.disabledPlugins.length,

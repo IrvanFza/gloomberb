@@ -131,7 +131,7 @@ export function ShellPaneLayers({
                     showActions={showActions}
                     windowModeSelected={windowModeSelected}
                     footer={footer}
-                    onMouseDown={nativePaneChrome ? (event) => handleNativePaneMouseDown(leaf.instanceId, event) : undefined}
+                    onMouseDownCapture={nativePaneChrome ? (event) => handleNativePaneMouseDown(leaf.instanceId, event) : undefined}
                     onHeaderMouseMove={() => setHoveredPaneIfChanged(leaf.instanceId)}
                     onHeaderMouseDown={nativePaneChrome && !transientFocusActive ? (event) => startNativeDockedDrag(leaf.instanceId, rect, event) : undefined}
                     onHeaderMouseDrag={nativePaneChrome && !transientFocusActive ? handleNativeDrag : undefined}
@@ -191,7 +191,7 @@ export function ShellPaneLayers({
                   windowModeSelected={windowModeSelected}
                   showActions={showActions}
                   footer={footer}
-                  onMouseDown={nativePaneChrome ? (event) => handleNativePaneMouseDown(pane.instance.instanceId, event) : undefined}
+                  onMouseDownCapture={nativePaneChrome ? (event) => handleNativePaneMouseDown(pane.instance.instanceId, event) : undefined}
                   onHeaderMouseMove={() => setHoveredPaneIfChanged(pane.instance.instanceId)}
                   onHeaderMouseDown={nativePaneChrome ? (event) => startNativeFloatingDrag(pane.instance.instanceId, preview, event) : undefined}
                   onHeaderMouseDrag={nativePaneChrome ? handleNativeDrag : undefined}

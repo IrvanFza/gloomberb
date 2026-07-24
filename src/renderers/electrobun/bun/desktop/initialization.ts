@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { createAppServices, type AppServices } from "../../../../core/app-services";
+import { getDesktopBackendPlugins } from "../../../../plugins/catalog-backend";
 import type { AppSessionSnapshot } from "../../../../core/state/session-persistence";
 import {
   getDataDir,
@@ -126,7 +127,10 @@ export async function initializeDesktopBackend<TRpc>(
   const config = options.getCurrentConfig();
   if (!config) throw new Error("Desktop config failed to initialize.");
 
-  const services = createAppServices({ config, externalPlugins: [] });
+  const services = createAppServices({
+    config,
+    plugins: getDesktopBackendPlugins(),
+  });
   options.setServices(services);
   options.syncConfigAccessors();
   options.registerCoreCapabilities();

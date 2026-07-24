@@ -18,6 +18,7 @@ interface FloatingPaneWrapperProps {
   windowModeSelected?: boolean;
   showActions?: boolean;
   onMouseDown?: (event: any) => void;
+  onMouseDownCapture?: (event: any) => void;
   onHeaderMouseMove?: (event: any) => void;
   onHeaderMouseDown?: (event: any) => void;
   onHeaderMouseDrag?: (event: any) => void;
@@ -63,6 +64,7 @@ export function FloatingPaneWrapper({
   windowModeSelected = false,
   showActions = false,
   onMouseDown,
+  onMouseDownCapture,
   onHeaderMouseMove,
   onHeaderMouseDown,
   onHeaderMouseDrag,
@@ -104,6 +106,7 @@ export function FloatingPaneWrapper({
         showBorderColor: true,
       })}
       onMouseDown={onMouseDown}
+      onMouseDownCapture={onMouseDownCapture}
     >
       <PaneHeader
         title={title}

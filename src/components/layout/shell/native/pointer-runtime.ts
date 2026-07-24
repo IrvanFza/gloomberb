@@ -65,7 +65,10 @@ export function useShellNativePointerRuntime({
       event.preventDefault();
       return;
     }
-    focusNativePane(paneId);
+    queueMicrotask(() => {
+      if (event.isDefaultPrevented?.()) return;
+      focusNativePane(paneId);
+    });
   }, [focusNativePane, selectWindowModePane, windowMode]);
 
   const startNativeFloatingDrag = useCallback((paneId: string, rect: FloatingRect, event: ShellMouseEvent) => {

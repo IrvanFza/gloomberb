@@ -16,6 +16,7 @@ interface PaneWrapperProps {
   flexGrow?: number;
   showActions?: boolean;
   onMouseDown?: (event: any) => void;
+  onMouseDownCapture?: (event: any) => void;
   onHeaderMouseMove?: (event: any) => void;
   onHeaderMouseDown?: (event: any) => void;
   onHeaderMouseDrag?: (event: any) => void;
@@ -36,6 +37,7 @@ export function PaneWrapper({
   flexGrow,
   showActions = false,
   onMouseDown,
+  onMouseDownCapture,
   onHeaderMouseMove,
   onHeaderMouseDown,
   onHeaderMouseDrag,
@@ -76,6 +78,7 @@ export function PaneWrapper({
         showBorderColor: true,
       })}
       onMouseDown={onMouseDown}
+      onMouseDownCapture={onMouseDownCapture}
     >
       {title && (
         <PaneHeader
