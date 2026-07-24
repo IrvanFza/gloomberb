@@ -1,4 +1,5 @@
 import Electrobun, { ApplicationMenu, BrowserView, BrowserWindow, Utils } from "electrobun/bun";
+import { appendFileSync } from "fs";
 import {
   APP_SESSION_ID,
   APP_SESSION_SCHEMA_VERSION,
@@ -64,6 +65,25 @@ type DesktopRpc = ReturnType<typeof BrowserView.defineRPC<ElectrobunDesktopRpcSc
 console.log = (...args) => console.error(...args);
 console.info = (...args) => console.error(...args);
 console.warn = (...args) => console.error(...args);
+
+const startupLogPath = process.env.GLOOMBERB_STARTUP_LOG;
+
+function logStartup(message: string): void {
+  if (!startupLogPath) return;
+  try {
+    appendFileSync(startupLogPath, `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    // Startup diagnostics must never interfere with the application.
+  }
+}
+
+logStartup("backend module evaluated");
+process.on("uncaughtException", (error) => {
+  logStartup(`uncaught exception\n${summarizeError(error)}`);
+});
+process.on("unhandledRejection", (error) => {
+  logStartup(`unhandled rejection\n${summarizeError(error)}`);
+});
 
 setConfigStoreHost(nodeConfigStoreHost);
 setNativeIbkrGatewayModuleLoader(() => import("../../../plugins/ibkr/gateway/service/native"));
@@ -565,14 +585,17 @@ ApplicationMenu.on("application-menu-clicked", (event: unknown) => {
 });
 
 installApplicationMenu();
+logStartup("application menu installed");
 
 const mainRpc = createWindowRpc(MAIN_WINDOW_RPC_KEY);
+logStartup("main RPC created");
 const initialMainWindowFrame = normalizeWindowFrameWithMinimum(
   defaultMainWindowFrame(),
   defaultMainWindowFrame(),
   MAIN_WINDOW_MIN_SIZE,
 );
 
+logStartup(`creating main window with ${desktopWindowRenderer()} renderer`);
 mainWindow = new BrowserWindow({
   title: "Gloomberb",
   frame: initialMainWindowFrame,
@@ -584,10 +607,14 @@ mainWindow = new BrowserWindow({
   navigationRules: JSON.stringify(["views://*"]),
   sandbox: false,
 });
+logStartup("main window created");
 applyWindowsWindowIcon("Gloomberb");
+logStartup("window icon applied");
 applyWindowsCustomChrome("Gloomberb");
+logStartup("custom chrome applied");
 updateWindowFrameCache(mainWindow, initialMainWindowFrame, MAIN_WINDOW_MIN_SIZE);
 detachedWindowManager.focusWindowForRpcKey(MAIN_WINDOW_RPC_KEY);
+logStartup("main window focused");
 (mainWindow as any).on?.("move", (event: WindowMoveEvent) => {
   applyWindowMoveEvent(mainWindow, event);
 });

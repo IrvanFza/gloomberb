@@ -14,7 +14,7 @@ const config: ElectrobunConfig = {
   },
   build: {
     bun: {
-      entrypoint: "src/renderers/electrobun/bun/entry.ts",
+      entrypoint: "src/renderers/electrobun/bun/index.ts",
       sourcemap: "external",
     },
     copy: {
