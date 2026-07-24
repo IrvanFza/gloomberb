@@ -324,12 +324,7 @@ export function WebMessageComposer({
     : colors.border;
   const requestFocus = () => {
     onFocusRequest?.();
-    const focusInput = () => inputRef?.current?.focus?.();
-    focusInput();
-    queueMicrotask(focusInput);
-    globalThis.requestAnimationFrame?.(() => {
-      globalThis.requestAnimationFrame?.(focusInput);
-    });
+    inputRef?.current?.focus?.();
   };
   const handleInput = (value: string) => {
     if (!focused) onFocusRequest?.();
@@ -342,7 +337,6 @@ export function WebMessageComposer({
       width={width}
       height={height}
       backgroundColor={panelFill()}
-      onMouseDownCapture={requestFocus}
       onMouseDown={requestFocus}
       data-gloom-role="desktop-message-composer"
       style={{
