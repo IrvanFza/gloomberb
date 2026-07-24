@@ -10,6 +10,7 @@ $InstallLog = Join-Path $env:TEMP "gloomberb-arm64-install-$PID.log"
 $UninstallLog = Join-Path $env:TEMP "gloomberb-arm64-uninstall-$PID.log"
 $GuiStdoutLog = Join-Path $env:TEMP "gloomberb-arm64-gui-stdout-$PID.log"
 $GuiStderrLog = Join-Path $env:TEMP "gloomberb-arm64-gui-stderr-$PID.log"
+$GuiStartupLog = Join-Path $env:TEMP "gloomberb-arm64-gui-startup-$PID.log"
 $DesktopProfileDir = Join-Path $env:LOCALAPPDATA "com.vincelwt.gloomberb"
 
 function Assert-CommandSucceeds {
@@ -82,6 +83,7 @@ try {
   Remove-Item -Path $DesktopProfileDir -Recurse -Force -ErrorAction SilentlyContinue
 
   $env:ELECTROBUN_CONSOLE = "1"
+  $env:GLOOMBERB_STARTUP_LOG = $GuiStartupLog
   $GuiProcess = Start-Process `
     -FilePath $InstalledLauncher `
     -WorkingDirectory (Join-Path $InstallDir "bin") `
@@ -99,11 +101,13 @@ try {
   if ($GuiProcess.HasExited -and $GuiProcess.ExitCode -ne 0) {
     Get-Content $GuiStdoutLog -ErrorAction SilentlyContinue
     Get-Content $GuiStderrLog -ErrorAction SilentlyContinue
+    Get-Content $GuiStartupLog -ErrorAction SilentlyContinue
     throw "Windows ARM64 desktop GUI exited with code $($GuiProcess.ExitCode)"
   }
   if ($GuiProcess.HasExited -and $PackageProcesses.Count -eq 0) {
     Get-Content $GuiStdoutLog -ErrorAction SilentlyContinue
     Get-Content $GuiStderrLog -ErrorAction SilentlyContinue
+    Get-Content $GuiStartupLog -ErrorAction SilentlyContinue
     throw "Windows ARM64 desktop GUI did not remain running after launch"
   }
 
@@ -131,5 +135,5 @@ try {
 
   Remove-Item -Path $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -Path $DesktopProfileDir -Recurse -Force -ErrorAction SilentlyContinue
-  Remove-Item -Path $GuiStdoutLog, $GuiStderrLog -Force -ErrorAction SilentlyContinue
+  Remove-Item -Path $GuiStdoutLog, $GuiStderrLog, $GuiStartupLog -Force -ErrorAction SilentlyContinue
 }
