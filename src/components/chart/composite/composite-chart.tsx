@@ -619,6 +619,7 @@ function CompositeLegend({
 
 export function CompositeChart({
   series,
+  legendSeries,
   panels,
   width,
   height,
@@ -645,6 +646,10 @@ export function CompositeChart({
   const totalWidth = Math.max(1, Math.floor(width));
   const totalHeight = Math.max(1, Math.floor(height));
   const visibleSeries = useMemo(() => series.filter((entry) => entry.points.length > 0), [series]);
+  const visibleLegendSeries = useMemo(
+    () => (legendSeries ?? visibleSeries).filter((entry) => entry.points.length > 0),
+    [legendSeries, visibleSeries],
+  );
   const navigationBounds = useMemo(
     () => resolveCompositeNavigationBounds(visibleSeries, viewport),
     [viewport, visibleSeries],
@@ -896,7 +901,7 @@ export function CompositeChart({
       {showLegend ? (
         <CompositeLegend
           scene={scene}
-          series={visibleSeries}
+          series={visibleLegendSeries}
           width={totalWidth}
           accessory={legendAccessory}
           accessoryWidth={legendAccessoryWidth}

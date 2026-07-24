@@ -464,6 +464,7 @@ export async function resolveChartSpecData(
   const errors: string[] = [];
   const warnings: string[] = [];
   const priorityWarnings: string[] = [];
+  const baseSeriesIds = new Set(spec.series.map((entry) => entry.id));
   const visibleSeriesIds = new Set(spec.series
     .filter((entry) => entry.visible !== false)
     .map((entry) => entry.id));
@@ -643,6 +644,18 @@ export async function resolveChartSpecData(
       points: entry.points.slice(-spec.viewport.maxPoints!),
     }));
   }
+  const resolvedById = new Map(resolved.map((entry) => [entry.id, entry] as const));
+  const hiddenBaseSeries = rawSeries
+    .filter((entry) => !visibleSeriesIds.has(entry.id))
+    .map((entry) => prepareBaseSeriesForStudies(entry, bounds, true));
+  const hiddenBaseById = new Map(hiddenBaseSeries.map((entry) => [entry.id, entry] as const));
+  const legendSeries = [
+    ...spec.series.flatMap((seriesSpec) => {
+      const entry = resolvedById.get(seriesSpec.id) ?? hiddenBaseById.get(seriesSpec.id);
+      return entry ? [entry] : [];
+    }),
+    ...resolved.filter((entry) => !baseSeriesIds.has(entry.id)),
+  ];
   for (const entry of resolved) {
     if (entry.warning) warnings.push(`${entry.label}: ${entry.warning}`);
     if (entry.points.length === 0) warnings.push(`${entry.label}: no observations in the selected date range.`);
@@ -665,6 +678,7 @@ export async function resolveChartSpecData(
     : undefined;
   return {
     series: resolved,
+    legendSeries,
     ...(spec.viewport.maxPoints === undefined ? { bufferedSeries } : {}),
     loading: false,
     errors,

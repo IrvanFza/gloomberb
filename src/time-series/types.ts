@@ -137,6 +137,8 @@ export interface TimeSeriesFieldDefinition {
 
 export interface ChartResolutionResult {
   series: ResolvedSeries[];
+  /** Series available to the legend, including hidden base series that can be restored. */
+  legendSeries?: ResolvedSeries[];
   /** Loaded observations retained outside the visible window for interactive navigation. */
   bufferedSeries?: ResolvedSeries[];
   loading: boolean;

@@ -221,6 +221,29 @@ describe("CompositeChart", () => {
     expect(accessoryStart - lastLegendEnd).toBeGreaterThan(1);
   });
 
+  test("keeps non-plotted legend series available for restoring", async () => {
+    const price = series("price", "main", "left", "USD", [100, 103, 101]);
+    const hiddenRevenue = series("revenue", "main", "right", "%", [4, 6, 8]);
+    testSetup = await testRender(
+      <CompositeChart
+        width={78}
+        height={12}
+        series={[price]}
+        legendSeries={[price, hiddenRevenue]}
+        panels={[{ id: "main" }]}
+        cursorDate={new Date("2025-01-02T00:00:00.000Z")}
+      />,
+      { width: 80, height: 14 },
+    );
+
+    await act(async () => {
+      await testSetup!.renderOnce();
+      await testSetup!.renderOnce();
+    });
+
+    expect(testSetup.captureCharFrame()).toContain("OTHER Revenue");
+  });
+
   test("keeps the legend accessory visible when the pane is narrower than its legend", async () => {
     testSetup = await testRender(
       <CompositeChart

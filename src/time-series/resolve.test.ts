@@ -667,6 +667,7 @@ describe("resolveChartSpecData", () => {
 
     expect(result.errors).toEqual([]);
     expect(result.series.map((series) => series.id)).toEqual(["sma"]);
+    expect(result.legendSeries?.map((series) => series.id)).toEqual(["price", "sma"]);
     expect(result.series[0]?.points.map((point) => point.value)).toEqual([15, 25]);
   });
 

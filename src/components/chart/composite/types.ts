@@ -84,6 +84,8 @@ export interface BuildCompositeChartSceneOptions {
 
 export interface CompositeChartProps {
   series: ResolvedSeries[];
+  /** Optional legend model; can include hidden series that are not plotted. */
+  legendSeries?: ResolvedSeries[];
   panels: ChartPanelSpec[];
   width: number;
   height: number;

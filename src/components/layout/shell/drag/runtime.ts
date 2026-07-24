@@ -59,6 +59,8 @@ export interface ShellMouseEvent {
   button?: number;
   preciseX?: number;
   preciseY?: number;
+  /** Whether a later handler has claimed this pointer interaction. */
+  isDefaultPrevented?: () => boolean;
   stopPropagation: () => void;
   preventDefault: () => void;
 }

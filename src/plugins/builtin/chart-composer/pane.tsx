@@ -457,6 +457,7 @@ export function ChartComposerSurface({
       <Box flexGrow={1} minHeight={4}>
         <CompositeChart
           series={resolution.bufferedSeries ?? resolution.series}
+          legendSeries={resolution.legendSeries}
           panels={spec.panels}
           viewport={viewport}
           width={Math.max(1, width)}
