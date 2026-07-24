@@ -46,9 +46,7 @@ import { DesktopStateBroadcaster } from "./desktop/state-broadcaster";
 import { DesktopDetachedWindowManager } from "./desktop/detached-windows";
 import { handleDesktopHostRequest } from "./desktop/host-requests";
 import { handleDesktopWorkspaceRequest } from "./desktop/workspace/requests";
-import { handleDesktopBackendRequest } from "./desktop/backend-requests";
 import { resolveDesktopLiveStream } from "./desktop/media";
-import { initializeDesktopBackend } from "./desktop/initialization";
 import { applyWindowsCustomChrome } from "./desktop/windows-custom-chrome";
 import { applyWindowsWindowIcon } from "./desktop/windows-icons";
 import {
@@ -410,6 +408,9 @@ async function initialize(
   rpc: DesktopRpc,
   payload: Record<string, unknown>,
 ) {
+  logStartup("loading desktop backend initialization");
+  const { initializeDesktopBackend } = await import("./desktop/initialization");
+  logStartup("desktop backend initialization loaded");
   const init = await initializeDesktopBackend({
     getCurrentConfig: () => currentConfig,
     getCurrentServices: () => services,
@@ -495,6 +496,7 @@ async function handleBackendRequest(
     });
   }
 
+  const { handleDesktopBackendRequest } = await import("./desktop/backend-requests");
   const backendResult = await handleDesktopBackendRequest({
     clearCurrentConfig: () => {
       currentConfig = null;
