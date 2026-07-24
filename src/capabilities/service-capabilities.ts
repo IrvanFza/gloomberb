@@ -1,6 +1,8 @@
 import type { BrokerConnectionStatus } from "../types/broker";
 import type { QuoteSubscriptionTarget } from "../types/data-provider";
 import type { Quote } from "../types/financials";
+import type { AiAuthProgressEvent } from "../plugins/builtin/ai/runner";
+import type { AiAgentHistoryMessage } from "../plugins/builtin/ai/agent-history";
 
 export const BROKER_CAPABILITY_ID = "broker.core";
 export const NOTES_FILES_CAPABILITY_ID = "notes.files";
@@ -22,6 +24,9 @@ export type BrokerRemoteEvent = BrokerStatusEvent | BrokerQuoteEvent;
 
 export type AiRunnerEvent =
   | { kind: "chunk"; output: string }
-  | { kind: "done"; output: string }
+  | { kind: "done"; output: string; agentMessages?: AiAgentHistoryMessage[] }
   | { kind: "cancelled" }
-  | { kind: "error"; error: string };
+  | { kind: "error"; error: string }
+  | { kind: "account-auth"; event: AiAuthProgressEvent }
+  | { kind: "account-connected"; catalog: unknown }
+  | { kind: "account-error"; error: string };

@@ -6,7 +6,12 @@ import { applyLanguageFromConfig } from "../../../i18n";
 import { UiHostProvider } from "../../../ui/host";
 import { debugLog } from "../../../utils/debug-log";
 import { measurePerfAsync } from "../../../utils/perf-marks";
-import { backendRequest, initElectrobunBackend, setElectrobunRemoteRequestHandler } from "./backend-rpc";
+import {
+  backendRequest,
+  initElectrobunBackend,
+  requestMainWindowRemoteControl,
+  setElectrobunRemoteRequestHandler,
+} from "./backend-rpc";
 import { installElectrobunAiHost } from "./ai-host";
 import { installElectrobunBrokerRemoteClient } from "./broker-remote-client";
 import { installElectrobunConfigStoreHost } from "./config-host";
@@ -83,7 +88,7 @@ async function boot() {
   installElectrobunCloudApiFetchTransport();
   installElectrobunUpdateHost();
   const init = await measurePerfAsync("startup.electrobun.backend-init", () => backendInitPromise);
-  await installElectrobunAiHost();
+  installElectrobunAiHost();
   const desktopSnapshot = init.windowKind === "detached" && init.paneId && init.desktopSnapshot
     ? prepareDetachedSnapshot(init.desktopSnapshot, init.paneId)
     : init.desktopSnapshot;
@@ -95,7 +100,7 @@ async function boot() {
   const webUiHost = createWebUiHost(init.desktopPlatform);
   const remoteControlAdapter = init.windowKind === "main"
     ? { registerHandler: setElectrobunRemoteRequestHandler }
-    : undefined;
+    : { handleRequest: requestMainWindowRemoteControl };
   measurePerfAsync("startup.electrobun.root-render", async () => {
     root.render(
       <ElectrobunErrorBoundary>

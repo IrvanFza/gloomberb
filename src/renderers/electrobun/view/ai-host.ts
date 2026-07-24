@@ -3,40 +3,103 @@ import {
   type AiRunnerEvent,
 } from "../../../capabilities";
 import {
-  __setDetectedProvidersForTests,
-  getAiProviderDefinitions,
-  type AiProviderAvailability,
-} from "../../../plugins/builtin/ai/providers";
-import { AiRunCancelledError, setAiRunHost } from "../../../plugins/builtin/ai/runner";
+  AiRunCancelledError,
+  installAiRunHost,
+  type AiAuthProgressEvent,
+  type AiRunHost,
+  type AiRuntimeAuthType,
+  type AiRuntimeCatalog,
+} from "../../../plugins/builtin/ai/runner";
+import { debugLog } from "../../../utils/debug-log";
 import { backendRequest, onCapabilityEvent } from "./backend-rpc";
 
+const AI_STARTUP_READINESS_TIMEOUT_MS = 5_000;
+const aiHostLog = debugLog.createLogger("electrobun-ai-host");
 let nextRunId = 1;
 
-export async function installElectrobunAiHost(): Promise<void> {
-  const availability = await backendRequest<Record<string, AiProviderAvailability>>("capability.invoke", {
-    capabilityId: AI_RUNNER_CAPABILITY_ID,
-    operationId: "getProviderAvailability",
-    payload: {},
+function connectProvider(
+  providerId: string,
+  authType?: AiRuntimeAuthType,
+  onAuthEvent?: (event: AiAuthProgressEvent) => void,
+): Promise<AiRuntimeCatalog> {
+  const subscriptionId = `ai-login:${nextRunId++}`;
+  let settled = false;
+  let disposeMessages: () => void = () => {};
+  let resolveDone: (catalog: AiRuntimeCatalog) => void = () => {};
+  let rejectDone: (error: unknown) => void = () => {};
+  const cleanup = () => {
+    disposeMessages();
+    void backendRequest("capability.unsubscribe", { subscriptionId }).catch(() => {});
+  };
+  const settle = (callback: () => void) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    callback();
+  };
+  const done = new Promise<AiRuntimeCatalog>((resolve, reject) => {
+    resolveDone = resolve;
+    rejectDone = reject;
   });
-  const providers = getAiProviderDefinitions().map((definition) => ({
-    ...definition,
-    ...(availability[definition.id] ?? {
-      available: false,
-      status: "check_failed" as const,
-      unavailableReason: `${definition.name} readiness could not be checked.`,
-    }),
-  }));
+  disposeMessages = onCapabilityEvent(subscriptionId, (message) => {
+    const event = message.event as AiRunnerEvent;
+    if (event.kind === "account-connected") {
+      settle(() => resolveDone(event.catalog as AiRuntimeCatalog));
+    } else if (event.kind === "account-auth") {
+      onAuthEvent?.(event.event);
+    } else if (event.kind === "account-error") {
+      settle(() => rejectDone(new Error(event.error)));
+    }
+  });
+  void backendRequest("capability.subscribe", {
+    subscriptionId,
+    capabilityId: AI_RUNNER_CAPABILITY_ID,
+    operationId: "connectProvider",
+    payload: { providerId, authType },
+  }).catch((error) => {
+    settle(() => rejectDone(error));
+  }).finally(() => {
+    if (settled) void backendRequest("capability.unsubscribe", { subscriptionId }).catch(() => {});
+  });
+  return done;
+}
 
-  __setDetectedProvidersForTests(providers);
-  setAiRunHost({
-    checkStatus(provider) {
+export function installElectrobunAiHost(): void {
+  const host: AiRunHost = {
+    getCatalog() {
+      return backendRequest("capability.invoke", {
+        capabilityId: AI_RUNNER_CAPABILITY_ID,
+        operationId: "getCatalog",
+        payload: {},
+      });
+    },
+    connect(providerId, authType, onAuthEvent) {
+      return connectProvider(providerId, authType, onAuthEvent);
+    },
+    disconnect(providerId) {
+      return backendRequest("capability.invoke", {
+        capabilityId: AI_RUNNER_CAPABILITY_ID,
+        operationId: "disconnectProvider",
+        payload: { providerId },
+      });
+    },
+    checkStatus(providerId) {
       return backendRequest("capability.invoke", {
         capabilityId: AI_RUNNER_CAPABILITY_ID,
         operationId: "checkProviderStatus",
-        payload: { providerId: provider.id },
+        payload: { providerId },
       });
     },
-    run({ provider, prompt, cwd, onChunk, outputMode, isolatedWorkspace }) {
+    run({
+      providerId,
+      prompt,
+      messages,
+      agentMessages,
+      modelId,
+      onChunk,
+      onAgentMessages,
+      outputMode,
+    }) {
       const subscriptionId = `ai-run:${nextRunId++}`;
       let disposed = false;
       let settled = false;
@@ -70,13 +133,20 @@ export async function installElectrobunAiHost(): Promise<void> {
             onChunk?.(event.output);
             break;
           case "done":
-            settle(() => resolveDone(event.output));
+            settle(() => {
+              if (event.agentMessages) onAgentMessages?.(event.agentMessages);
+              resolveDone(event.output);
+            });
             break;
           case "cancelled":
             settle(() => rejectDone(new AiRunCancelledError()));
             break;
           case "error":
             settle(() => rejectDone(new Error(event.error)));
+            break;
+          case "account-connected":
+          case "account-auth":
+          case "account-error":
             break;
         }
       });
@@ -86,11 +156,12 @@ export async function installElectrobunAiHost(): Promise<void> {
         capabilityId: AI_RUNNER_CAPABILITY_ID,
         operationId: "run",
         payload: {
-          providerId: provider.id,
+          providerId,
           prompt,
-          cwd,
+          messages,
+          agentMessages,
+          modelId,
           outputMode,
-          isolatedWorkspace,
         },
       }).catch((error) => {
         settle(() => rejectDone(error));
@@ -110,5 +181,18 @@ export async function installElectrobunAiHost(): Promise<void> {
         },
       };
     },
+  };
+  void installAiRunHost(host, {
+    catalogTimeoutMs: AI_STARTUP_READINESS_TIMEOUT_MS,
+    timeoutMessage: "In-app AI provider discovery timed out during desktop startup",
+    onCatalogError(error) {
+      aiHostLog.warn("In-app AI provider discovery could not finish during desktop startup", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    },
+  }).catch((error) => {
+    aiHostLog.warn("In-app AI providers could not be initialized", {
+      error: error instanceof Error ? error.message : String(error),
+    });
   });
 }
