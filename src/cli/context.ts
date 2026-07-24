@@ -80,7 +80,7 @@ export async function initCliServices(options: CliServicesOptions = {}) {
   const config = await loadConfig(dataDir);
   const services = createAppServices({
     config,
-    externalPlugins: options.externalPlugins ?? [],
+    plugins: getLoadablePlugins(options.externalPlugins ?? []),
   });
   services.providerRouter.setConfigAccessor(() => config);
   await services.ready;

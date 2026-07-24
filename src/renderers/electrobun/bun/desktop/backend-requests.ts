@@ -1,4 +1,5 @@
 import { createAppServices, type AppServices } from "../../../../core/app-services";
+import { getDesktopBackendPlugins } from "../../../../plugins/catalog-backend";
 import type { AppSessionSnapshot } from "../../../../core/state/session-persistence";
 import {
   exportConfig,
@@ -80,7 +81,10 @@ async function importDesktopConfig({
   setDesktopWorkspace(null);
   teardownServices();
   setCurrentConfig(await importConfig(payload.dataDir as string, payload.srcPath as string));
-  setServices(createAppServices({ config: getConfig(), externalPlugins: [] }));
+  setServices(createAppServices({
+    config: getConfig(),
+    plugins: getDesktopBackendPlugins(),
+  }));
   syncConfigAccessors();
   registerCoreCapabilities();
   const desktopWorkspace = createDesktopWorkspace(getConfig(), getSessionSnapshot());
