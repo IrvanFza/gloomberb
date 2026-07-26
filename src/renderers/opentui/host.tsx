@@ -82,6 +82,9 @@ function installResolutionEventBridge(renderer: CliRenderer): void {
 export async function createOpenTuiHost(): Promise<OpenTuiHost> {
   resetTerminalInputState();
 
+  // Mouse motion is reported per pixel; our @opentui/core patch coalesces moves
+  // to one per fastest frame (~16ms) so pointer-tracked UI like the chart
+  // crosshair follows the cursor instead of stepping at 10fps.
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     backgroundColor: colors.bg,
