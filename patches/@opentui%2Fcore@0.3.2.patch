@@ -1,5 +1,5 @@
 diff --git a/index-218h9p3f.js b/index-218h9p3f.js
-index b9445d2cca9477dfe06026da451b6d19268fcbdd..da790c31da185325405227329dad2ac12f5329e7 100644
+index b9445d2cca9477dfe06026da451b6d19268fcbdd..8734376ebd706056791f8b59ad0992ac6c440d3c 100644
 --- a/index-218h9p3f.js
 +++ b/index-218h9p3f.js
 @@ -6487,17 +6487,27 @@ class MouseParser {
@@ -166,7 +166,8 @@ index b9445d2cca9477dfe06026da451b6d19268fcbdd..da790c31da185325405227329dad2ac1
      this.events.push({
        type: "mouse",
        raw: decodeLatin1(rawBytes),
-@@ -17996,5 +18030,7 @@ function isGapType(value) {
+@@ -17995,6 +18029,8 @@ function isGapType(value) {
+ 
  class BoxRenderable extends Renderable {
    _backgroundColor;
 +  _hoverBackgroundColor;
@@ -441,7 +442,7 @@ index b9445d2cca9477dfe06026da451b6d19268fcbdd..da790c31da185325405227329dad2ac1
 +    if (this._pendingMouseMoveTimer !== null || this._isDestroyed) {
 +      return;
 +    }
-+    const delay = Math.max(100, Math.floor(this.targetFrameTime));
++    const delay = Math.max(8, Math.floor(this.minTargetFrameTime));
 +    this._pendingMouseMoveTimer = this.clock.setTimeout(() => {
 +      this._pendingMouseMoveTimer = null;
 +      this.flushPendingMouseMove();
@@ -507,13 +508,13 @@ index b9445d2cca9477dfe06026da451b6d19268fcbdd..da790c31da185325405227329dad2ac1
        this.clock.clearTimeout(this.capabilityTimeoutId);
        this.capabilityTimeoutId = null;
 @@ -24847,6 +25049,7 @@ Captured external output:
-       this.renderTimeout = null;
      }
      this.themeModeState.cancelRefresh();
-+    this.disablePixelMouseMode();
      this._isRunning = false;
++    this.disablePixelMouseMode();
      this.waitingForPixelResolution = false;
      this.updateStdinParserProtocolContext({
+       privateCapabilityRepliesActive: false,
 diff --git a/lib/parse.mouse.d.ts b/lib/parse.mouse.d.ts
 index c29f953fde0b78f09d2ec7a830e5a72452c1fe7e..04613b921bd9b4a9a7a1a4fbd0234d4012df67a1 100644
 --- a/lib/parse.mouse.d.ts

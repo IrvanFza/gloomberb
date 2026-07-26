@@ -19,8 +19,6 @@ import type {
 interface RenderCompositePanelBitmapOptions {
   pixelWidth: number;
   pixelHeight: number;
-  cursorXRatio: number | null;
-  cursorYRatio: number | null;
   colors: CompositeChartColors;
 }
 
@@ -248,7 +246,6 @@ export function renderCompositePanelBitmap(
   const data = new Uint8Array(width * height * 4);
   const background = parseHex(options.colors.background);
   const grid = parseHex(options.colors.grid);
-  const crosshair = parseHex(options.colors.crosshair);
   const negative = parseHex(options.colors.negative);
   fillRect(data, width, height, 0, 0, width - 1, height - 1, background, 1);
 
@@ -299,25 +296,6 @@ export function renderCompositePanelBitmap(
       case "step":
         drawConnectedSeries(data, width, height, series, domain, color, false);
         break;
-    }
-  }
-
-  if (options.cursorXRatio !== null) {
-    const x = clamp(options.cursorXRatio * Math.max(width - 1, 0), 0, Math.max(width - 1, 0));
-    fillRect(data, width, height, x - 0.55, 0, x + 0.55, height - 1, crosshair, 0.75);
-    for (const series of panel.series) {
-      const cursorPoint = series.points.find((point) => Math.abs(point.xRatio - options.cursorXRatio!) < 1e-9);
-      if (!cursorPoint) continue;
-      const projected = pixelPoint(cursorPoint, width, height);
-      drawCircle(data, width, height, projected.x, projected.y, 2.6, parseHex(series.source.color));
-    }
-  }
-  if (options.cursorYRatio !== null) {
-    const y = clamp(options.cursorYRatio * Math.max(height - 1, 0), 0, Math.max(height - 1, 0));
-    fillRect(data, width, height, 0, y - 0.55, width - 1, y + 0.55, crosshair, 0.75);
-    if (options.cursorXRatio !== null) {
-      const x = clamp(options.cursorXRatio * Math.max(width - 1, 0), 0, Math.max(width - 1, 0));
-      drawCircle(data, width, height, x, y, 3, crosshair);
     }
   }
 

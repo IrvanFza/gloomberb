@@ -6,7 +6,7 @@ import {
   computeNativePlacement,
   excludeCellRects,
   renderNativeChartBase,
-  renderNativeCrosshairOverlay,
+  renderCrosshairStrips,
   type CellRect,
 } from "../chart-rasterizer";
 import { KittyImageManager } from "./manager";
@@ -375,58 +375,43 @@ describe("renderNativeChartBase", () => {
   });
 });
 
-describe("renderNativeCrosshairOverlay", () => {
-  test("renders a smooth native crosshair using exact pixel coordinates", () => {
-    const bitmap = renderNativeCrosshairOverlay({
-      width: 12,
-      height: 6,
-      chartRows: 6,
-      pixelX: 49.5,
-      pixelY: 30.25,
-      colors: {
-        crosshairColor: "#ffffff",
-      },
-    }, 120, 60);
-    const verticalOffset = (10 * bitmap.width + 49) * 4;
-    const horizontalOffset = (30 * bitmap.width + 10) * 4;
-    expect(bitmap.pixels[verticalOffset]).toBeGreaterThan(100);
-    expect(bitmap.pixels[verticalOffset + 1]).toBeGreaterThan(100);
-    expect(bitmap.pixels[horizontalOffset]).toBeGreaterThan(100);
-    expect(bitmap.pixels[horizontalOffset + 1]).toBeGreaterThan(100);
-    expect(bitmap.pixels[verticalOffset + 3]).toBeGreaterThan(0);
+describe("renderCrosshairStrips", () => {
+  const strips = renderCrosshairStrips({
+    pixelX: 49.5,
+    pixelY: 30.25,
+    pixelWidth: 120,
+    pixelHeight: 60,
+    cols: 12,
+    rows: 6,
+    cellWidth: 10,
+    cellHeight: 10,
+    color: "#ffffff",
+    markers: [{ pixelY: 12, color: "#ff00ff" }],
   });
 
-  test("keeps the overlay transparent away from the cursor", () => {
-    const bitmap = renderNativeCrosshairOverlay({
-      width: 12,
-      height: 6,
-      chartRows: 6,
-      pixelX: 49.5,
-      pixelY: 30.25,
-      colors: {
-        crosshairColor: "#00ff00",
-      },
-    }, 120, 60);
+  test("places thin strips on the cursor's cells with sub-cell line positions", () => {
+    const [vertical, horizontal] = strips;
+    // Cursor sits in column 4 and row 3; the vertical strip is padded by a cell.
+    expect(vertical!.rect).toEqual({ x: 3, y: 0, width: 3, height: 6 });
+    expect(horizontal!.rect).toEqual({ x: 0, y: 3, width: 12, height: 1 });
+    expect(vertical!.bitmap.width).toBe(30);
+    expect(vertical!.bitmap.height).toBe(60);
+    expect(horizontal!.bitmap.width).toBe(120);
+    expect(horizontal!.bitmap.height).toBe(10);
 
-    const emptyOffset = (2 * bitmap.width + 2) * 4;
-    expect(bitmap.pixels[emptyOffset + 3]).toBe(0);
+    // Line pixels land at the cursor offset inside the strip, not at its edge.
+    const verticalOffset = (10 * vertical!.bitmap.width + 19) * 4;
+    expect(vertical!.bitmap.pixels[verticalOffset + 3]).toBeGreaterThan(0);
+    const horizontalOffset = (0 * horizontal!.bitmap.width + 60) * 4;
+    expect(horizontal!.bitmap.pixels[horizontalOffset + 3]).toBeGreaterThan(0);
   });
 
-  test("returns an empty overlay when there is no cursor", () => {
-    const bitmap = renderNativeCrosshairOverlay({
-      width: 12,
-      height: 6,
-      chartRows: 6,
-      pixelX: null,
-      pixelY: null,
-      colors: {
-        crosshairColor: "#00ff00",
-      },
-    }, 120, 60);
-
-    for (let offset = 3; offset < bitmap.pixels.length; offset += 4) {
-      expect(bitmap.pixels[offset]).toBe(0);
-    }
+  test("draws series markers and stays transparent away from the cursor", () => {
+    const vertical = strips[0]!;
+    const markerOffset = (12 * vertical.bitmap.width + 19) * 4;
+    expect(vertical.bitmap.pixels[markerOffset]).toBeGreaterThan(180);
+    expect(vertical.bitmap.pixels[markerOffset + 2]).toBeGreaterThan(180);
+    expect(vertical.bitmap.pixels[(40 * vertical.bitmap.width + 1) * 4 + 3]).toBe(0);
   });
 });
 
