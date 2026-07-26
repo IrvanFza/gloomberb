@@ -704,6 +704,53 @@ describe("CommandBar pane and layout routes", () => {
     }]);
   });
 
+  test("clears the root shortcut query when opening pane settings and nested pickers", async () => {
+    testSetup = await testRender(<CommandBarHarness
+      query="PS"
+      configureState={(state) => ({
+        ...state,
+        focusedPaneId: "quote-monitor:main",
+      })}
+      hasPaneSettings={(paneId) => paneId === "quote-monitor:main"}
+      configurePluginRegistry={(pluginRegistry) => {
+        pluginRegistry.resolvePaneSettings = () => makeQuoteMonitorPaneSettingsDescriptor(pluginRegistry, [{
+          key: "range",
+          label: "Range",
+          type: "select",
+          options: [
+            { label: "1M", value: "1M" },
+            { label: "1Y", value: "1Y" },
+          ],
+        }]);
+      }}
+    />, {
+      width: 100,
+      height: 20,
+    });
+
+    await testSetup.renderOnce();
+
+    await act(async () => {
+      testSetup!.mockInput.pressEnter();
+      await testSetup!.renderOnce();
+    });
+    await renderFrames();
+    let frame = testSetup.captureCharFrame();
+    expect(frame).toContain("Quote Monitor Settings");
+    expect(frame).not.toContain("PS");
+
+    await act(async () => {
+      testSetup!.mockInput.pressEnter();
+      await testSetup!.renderOnce();
+    });
+    await renderFrames();
+    frame = testSetup.captureCharFrame();
+    expect(frame).toContain("1M");
+    expect(frame).toContain("1Y");
+    expect(frame).not.toContain("No matches");
+    expect(frame).not.toContain("PS");
+  });
+
   test("opens focused pane settings directly from root search", async () => {
     const appliedValues: Array<{ paneId: string; key: string; value: unknown }> = [];
 

@@ -8,6 +8,7 @@ import {
   resolveCompositeCursorDate,
   unprojectCompositeValue,
 } from "./scene";
+import { buildCompositeColumnLayout } from "./column-layout";
 
 function point(date: string, value: number): TimeSeriesPoint {
   const observedAt = new Date(`${date}T00:00:00.000Z`);
@@ -28,6 +29,8 @@ function series(overrides: Partial<ResolvedSeries> & Pick<ResolvedSeries, "id" |
     axis: overrides.axis ?? "left",
     panelId: overrides.panelId ?? "main",
     interpolation: overrides.interpolation ?? "none",
+    timestampMode: overrides.timestampMode,
+    timeBasis: overrides.timeBasis,
     points: overrides.points,
     warning: overrides.warning,
   };
@@ -149,6 +152,26 @@ describe("composite chart scene", () => {
       [{ id: "one", height: 3 }, { id: "two", height: 1 }, { id: "three", height: 1 }],
       4,
     )).toEqual(new Map([["one", 2], ["two", 1], ["three", 1]]));
+    expect(allocateCompositePanelHeights(
+      [{ id: "primary", height: 2 }, { id: "secondary", height: 1 }],
+      4,
+    )).toEqual(new Map([["primary", 3], ["secondary", 1]]));
+  });
+
+  test("uses one last-write-wins policy for duplicate timestamps", () => {
+    const duplicate = series({
+      id: "duplicate",
+      points: [
+        point("2025-01-01", 10),
+        { ...point("2025-01-01", 10), value: null, close: null },
+      ],
+    });
+
+    expect(buildCompositeChartScene(
+      [duplicate],
+      [{ id: "main" }],
+      { width: 40, height: 8 },
+    )).toBeNull();
   });
 
   test("preserves explicit viewport bounds when observations are sparse", () => {
@@ -243,6 +266,177 @@ describe("composite chart scene", () => {
     expect(betweenDaily?.cursorDate?.toISOString()).toBe("2025-01-02T00:00:00.000Z");
     expect(betweenDaily?.cursorValues.find((entry) => entry.seriesId === "daily")?.value).toBe(20);
     expect(betweenDaily?.cursorValues.find((entry) => entry.seriesId === "quarterly")?.value).toBe(100);
+  });
+
+  test("places a filing on its first eligible market slot without changing source timestamps", () => {
+    const price = series({
+      id: "price",
+      dataShape: "ohlcv",
+      timeBasis: {
+        kind: "market",
+        timeZone: "America/New_York",
+        cadenceMs: 60 * 60 * 1_000,
+      },
+      points: [
+        point("2025-01-03", 100),
+        { ...point("2025-01-03", 101), date: new Date("2025-01-03T16:00:00.000Z"), observedAt: new Date("2025-01-03T16:00:00.000Z") },
+        { ...point("2025-01-06", 102), date: new Date("2025-01-06T14:00:00.000Z"), observedAt: new Date("2025-01-06T14:00:00.000Z") },
+        { ...point("2025-01-06", 103), date: new Date("2025-01-06T15:00:00.000Z"), observedAt: new Date("2025-01-06T15:00:00.000Z") },
+      ],
+    });
+    const observedAt = new Date("2024-12-31T00:00:00.000Z");
+    const availableAt = new Date("2025-01-04T12:05:00.000Z");
+    const filingPoint: TimeSeriesPoint = {
+      date: observedAt,
+      observedAt,
+      availableAt,
+      value: 500,
+      periodLabel: "2024 Q4",
+    };
+    const filing = series({
+      id: "filing",
+      style: "columns",
+      nativeFrequency: "quarterly",
+      timestampMode: "period-end",
+      points: [filingPoint],
+    });
+    const viewport = {
+      start: new Date("2025-01-03T00:00:00.000Z"),
+      end: new Date("2025-01-06T15:00:00.000Z"),
+    };
+    const friday = buildCompositeChartScene(
+      [price, filing],
+      [{ id: "main" }],
+      { width: 101, height: 10, viewport, cursorDate: new Date("2025-01-03T16:00:00.000Z") },
+    )!;
+
+    const pricePoints = friday.panels[0]!.series.find((entry) => entry.source.id === "price")!.points;
+    const filingProjected = friday.panels[0]!.series.find((entry) => entry.source.id === "filing")!.points[0]!;
+    const mondayPrice = pricePoints.find((entry) => entry.timestamp === Date.parse("2025-01-06T14:00:00.000Z"))!;
+    expect(filingProjected.xRatio).toBe(mondayPrice.xRatio);
+    expect(filingProjected.xSlot).toBe(mondayPrice.xSlot);
+    expect(filingProjected.point.date).toBe(observedAt);
+    expect(filingProjected.point.observedAt).toBe(observedAt);
+    expect(filingProjected.point.availableAt).toBe(availableAt);
+    expect(friday.cursorValues.find((entry) => entry.seriesId === "filing")?.value).toBeNull();
+
+    const monday = applyCompositeChartCursor(friday, new Date("2025-01-06T14:00:00.000Z"));
+    expect(monday.cursorValues.find((entry) => entry.seriesId === "filing")?.value).toBe(500);
+    expect(monday.dates.map((date) => date.getUTCDay())).not.toContain(6);
+  });
+
+  test("does not expose a filing whose availability is after the market viewport", () => {
+    const price = series({
+      id: "price",
+      timeBasis: {
+        kind: "market",
+        timeZone: "America/New_York",
+        cadenceMs: 24 * 60 * 60 * 1_000,
+      },
+      points: [point("2025-01-03", 100), point("2025-01-06", 102)],
+    });
+    const filing = series({
+      id: "filing",
+      style: "columns",
+      points: [{
+        ...point("2025-01-03", 500),
+        availableAt: new Date("2025-01-07T12:00:00.000Z"),
+      }],
+    });
+    const scene = buildCompositeChartScene(
+      [price, filing],
+      [{ id: "main" }],
+      {
+        width: 80,
+        height: 10,
+        viewport: {
+          start: new Date("2025-01-03T00:00:00.000Z"),
+          end: new Date("2025-01-06T23:59:59.999Z"),
+        },
+      },
+    );
+
+    expect(scene?.panels[0]?.series.some((entry) => entry.source.id === "filing")).toBe(false);
+  });
+
+  test("groups publications that snap to the same market slot into adjacent lanes", () => {
+    const price = series({
+      id: "price",
+      timeBasis: {
+        kind: "market",
+        timeZone: "America/New_York",
+        cadenceMs: 24 * 60 * 60 * 1_000,
+      },
+      points: [point("2025-01-03", 100), point("2025-01-06", 102), point("2025-01-07", 104)],
+    });
+    const filing = (id: string, availableAt: string) => series({
+      id,
+      style: "columns",
+      nativeFrequency: "quarterly",
+      timestampMode: "period-end",
+      unitGroup: "currency-total",
+      points: [{
+        ...point("2024-12-31", id === "revenue" ? 500 : 100),
+        availableAt: new Date(availableAt),
+        periodLabel: "2024 Q4",
+      }],
+    });
+    const scene = buildCompositeChartScene(
+      [price, filing("revenue", "2025-01-04T12:00:00.000Z"), filing("income", "2025-01-05T12:00:00.000Z")],
+      [{ id: "main" }],
+      { width: 80, height: 10 },
+    )!;
+    const panel = scene.panels[0]!;
+    const columns = panel.series.filter((entry) => entry.source.style === "columns");
+    const first = columns[0]!.points[0]!;
+    const second = columns[1]!.points[0]!;
+    const layout = buildCompositeColumnLayout(panel);
+
+    expect(first.xSlot).toBe(second.xSlot);
+    expect(layout.groupByPoint.get(first)).toMatchObject({ index: 0, count: 2 });
+    expect(layout.groupByPoint.get(second)).toMatchObject({ index: 1, count: 2 });
+  });
+
+  test("retains the authored primary market scale when its plotted series is hidden", () => {
+    const anchor = series({
+      id: "primary-price",
+      timeBasis: {
+        kind: "market",
+        timeZone: "America/New_York",
+        cadenceMs: 60 * 60 * 1_000,
+      },
+      points: [
+        { ...point("2025-01-03", 100), date: new Date("2025-01-03T16:00:00.000Z") },
+        { ...point("2025-01-06", 101), date: new Date("2025-01-06T14:00:00.000Z") },
+      ],
+    });
+    const filing = series({
+      id: "filing",
+      style: "columns",
+      points: [{
+        ...point("2024-12-31", 500),
+        availableAt: new Date("2025-01-04T12:00:00.000Z"),
+      }],
+    });
+    const scene = buildCompositeChartScene(
+      [filing],
+      [{ id: "main" }],
+      {
+        width: 80,
+        height: 10,
+        viewport: {
+          start: new Date("2025-01-03T00:00:00.000Z"),
+          end: new Date("2025-01-06T23:59:59.999Z"),
+        },
+        timelineSeries: [anchor, filing],
+      },
+    );
+
+    expect(scene?.timeScale).toMatchObject({
+      kind: "market",
+      anchorSeriesId: "primary-price",
+    });
+    expect(scene?.panels[0]?.series[0]?.points[0]?.xSlot).toBe(1);
   });
 
   test("hydrates cursor values without rebuilding projected panels", () => {

@@ -32,10 +32,34 @@ export interface CompositeProjectedPoint {
   timestamp: number;
   value: number;
   xRatio: number;
+  /** Primary-market anchor slot when projection snapped to a trading observation. */
+  xSlot?: number;
   yRatio: number;
   /** True when this point starts after a null, invalid, or log-hidden gap. */
   breakBefore: boolean;
 }
+
+export interface CompositeCalendarTimeScale {
+  kind: "calendar";
+  startTime: number;
+  endTime: number;
+}
+
+export interface CompositeMarketTimeScale {
+  kind: "market";
+  startTime: number;
+  endTime: number;
+  anchorSeriesId: string;
+  cadenceMs: number;
+  anchors: Array<{
+    timestamp: number;
+    position: number;
+  }>;
+  startPosition: number;
+  endPosition: number;
+}
+
+export type CompositeTimeScale = CompositeCalendarTimeScale | CompositeMarketTimeScale;
 
 export interface CompositeProjectedSeries {
   source: ResolvedSeries;
@@ -65,7 +89,10 @@ export interface CompositeChartScene {
   height: number;
   startTime: number;
   endTime: number;
+  timeScale: CompositeTimeScale;
   dates: Date[];
+  /** Projected positions aligned with `dates`, used for pointer snapping. */
+  dateRatios: number[];
   panels: CompositePanelScene[];
   cursorDate: Date | null;
   cursorXRatio: number | null;
@@ -80,6 +107,8 @@ export interface BuildCompositeChartSceneOptions {
     start: Date;
     end: Date;
   };
+  /** Authored series order retained even when the primary anchor is hidden. */
+  timelineSeries?: ResolvedSeries[];
 }
 
 export interface CompositeChartProps {
@@ -105,6 +134,7 @@ export interface CompositeChartProps {
   emptyMessage?: string;
   formatValue?: (value: number, series: ResolvedSeries) => string;
   onCursorDateChange?: (date: Date | null) => void;
+  onViewportChange?: (viewport: { start: Date; end: Date } | null) => void;
   onActivate?: () => void;
   onToggleSeries?: (seriesId: string) => void;
   isSeriesToggleable?: (series: ResolvedSeries) => boolean;

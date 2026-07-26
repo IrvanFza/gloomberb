@@ -142,7 +142,7 @@ function FooterContent({
   showBackground?: boolean;
 }) {
   const hasInfo = footer.info.length > 0;
-  const visibleHints = focused ? footer.hints : [];
+  const visibleHints = focused ? footer.hints.filter((hint) => !hint.disabled) : [];
   const hasHints = visibleHints.length > 0;
   const dividerColor = focused ? colors.borderFocused : colors.border;
   const backgroundColor = showBackground ? blendHex(colors.bg, dividerColor, focused ? 0.12 : 0.06) : undefined;

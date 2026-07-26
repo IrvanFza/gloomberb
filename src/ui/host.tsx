@@ -108,6 +108,7 @@ export interface ScrollBoxRenderable {
   scrollTop: number;
   scrollLeft?: number;
   scrollHeight: number;
+  scrollWidth?: number;
   scrollTopPx?: number;
   scrollLeftPx?: number;
   scrollHeightPx?: number;
@@ -278,6 +279,7 @@ export interface HostTabsProps {
   activeValue: string | null;
   onSelect: (value: string) => void;
   compact?: boolean;
+  dense?: boolean;
   variant?: "underline" | "pill" | "bare";
   closeMode?: "active" | "always";
   addLabel?: string;

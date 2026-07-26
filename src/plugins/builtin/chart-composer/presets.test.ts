@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
+  canToggleChartSeries,
   parseChartSpec,
+  projectVisibleChartSeries,
   serializeChartSpec,
+  toggleChartSeries,
 } from "./chart-spec";
 import {
   appendChartSeries,
@@ -12,6 +15,7 @@ import {
   buildPriceChartPreset,
   buildSeriesSpec,
   applySeriesStyle,
+  applySeriesTimestampMode,
   getSelectedBuiltinStudies,
   getSelectedPairStudies,
   parseChartExpression,
@@ -48,6 +52,64 @@ describe("chart composer expressions", () => {
       "aapl-market-ohlcv-3",
       "aapl-market-ohlcv-3-2",
     ]);
+  });
+
+  test("places appended financial data in a synchronized panel without rewriting authored state", () => {
+    const price = buildPriceChartPreset("AAPL");
+    const authored = {
+      ...price,
+      viewport: { ...price.viewport, range: "3M" as const },
+      panels: [...price.panels, { id: "notes", label: "Reserved", height: 0.4 }],
+    };
+    const appended = appendChartSeries(authored, {
+      kind: "security",
+      symbol: "MSFT",
+      fieldId: "fundamental.totalRevenue",
+    });
+
+    expect(appended.spec.viewport).toEqual(authored.viewport);
+    expect(appended.spec.studies).toEqual(authored.studies);
+    expect(appended.spec.series[0]).toEqual(authored.series[0]);
+    expect(appended.spec.panels.slice(0, authored.panels.length)).toEqual(authored.panels);
+    expect(appended.series).toMatchObject({
+      style: "columns",
+      panelId: "fundamentals",
+      source: { timestampMode: "available-at" },
+    });
+    expect(appended.spec.panels.find((panel) => panel.id === "fundamentals")).toMatchObject({
+      label: "Fundamentals",
+      height: 0.35,
+    });
+  });
+
+  test("places only the new candidate when incremental axes or panel scopes overflow", () => {
+    const fundamentals = buildFundamentalChartPreset(["AAPL"]);
+    const withPrice = appendChartSeries(fundamentals, {
+      kind: "security",
+      symbol: "AAPL",
+      fieldId: "market.ohlcv",
+    });
+    expect(withPrice.spec.series[0]).toEqual(fundamentals.series[0]);
+    expect(withPrice.series.panelId).toBe("panel-2");
+
+    const price = buildPriceChartPreset("AAPL");
+    const withCpi = appendChartSeries(price, {
+      kind: "economic",
+      provider: "fred",
+      seriesId: "CPIAUCSL",
+    }).spec;
+    const withRates = appendChartSeries(withCpi, {
+      kind: "economic",
+      provider: "fred",
+      seriesId: "UNRATE",
+    });
+    expect(withRates.spec.series.slice(0, 2).map((series) => series.panelId))
+      .toEqual(["main", "main"]);
+    expect(withRates.series.panelId).toBe("panel-2");
+    expect(withRates.spec.panels.find((panel) => panel.id === "panel-2")).toMatchObject({
+      label: "Panel 2",
+      height: 0.35,
+    });
   });
 
   test("renders an appended secondary OHLCV price as a valid comparison line", () => {
@@ -130,8 +192,9 @@ describe("chart composer expressions", () => {
     ]);
     expect(spec.series[0]).toMatchObject({ style: "candles", interpolation: "none" });
     expect(spec.series[1]).toMatchObject({
-      style: "step",
-      interpolation: "step-after",
+      style: "columns",
+      interpolation: "none",
+      panelId: "fundamentals",
       source: {
         kind: "security",
         fieldId: "fundamental.totalRevenue",
@@ -148,6 +211,24 @@ describe("chart composer expressions", () => {
     expect(spec.panels.find((panel) => panel.id === "panel-2")).toMatchObject({
       label: "Panel 2",
       height: 0.35,
+    });
+    expect(spec.panels.find((panel) => panel.id === "fundamentals")).toMatchObject({
+      label: "Fundamentals",
+      height: 0.35,
+    });
+
+    const reversed = buildCustomChartPreset("MSFT:revenue, AAPL:price");
+    const price = reversed.series.find((series) => (
+      series.source.kind === "security" && series.source.fieldId === "market.ohlcv"
+    ));
+    const revenue = reversed.series.find((series) => (
+      series.source.kind === "security" && series.source.fieldId === "fundamental.totalRevenue"
+    ));
+    expect(price?.panelId).toBe("main");
+    expect(revenue).toMatchObject({
+      panelId: "fundamentals",
+      style: "columns",
+      source: { timestampMode: "available-at" },
     });
 
     expect(buildCustomChartPreset("AAPL:revenue, MSFT:revenue").series.map((series) => series.axis))
@@ -190,10 +271,40 @@ describe("chart composer presets and formulas", () => {
 
     const fundamental = buildFundamentalChartPreset(["aapl"]);
     expect(fundamental.series[0]).toMatchObject({
-      style: "step",
-      interpolation: "step-after",
-      source: { fieldId: "fundamental.totalRevenue" },
+      style: "columns",
+      interpolation: "none",
+      source: { fieldId: "fundamental.totalRevenue", timestampMode: "period-end" },
     });
+  });
+
+  test("keeps one visible base series and projects visibility without waiting for data reload", () => {
+    const spec = buildComparisonChartPreset(["AAPL", "MSFT"]);
+    const resolved = spec.series.map((series, index) => ({
+      id: series.id,
+      label: series.id,
+      color: index === 0 ? "#fff" : "#aaa",
+      unit: "USD",
+      unitGroup: "price",
+      nativeFrequency: "daily" as const,
+      dataShape: "scalar" as const,
+      style: series.style,
+      transform: series.transform,
+      axis: "left" as const,
+      panelId: series.panelId,
+      interpolation: series.interpolation,
+      points: [],
+    }));
+
+    const withHiddenSecond = toggleChartSeries(spec, spec.series[1]!.id);
+    expect(withHiddenSecond.series[1]?.visible).toBe(false);
+    expect(projectVisibleChartSeries(withHiddenSecond, resolved).map((series) => series.id))
+      .toEqual([spec.series[0]!.id]);
+    expect(canToggleChartSeries(withHiddenSecond, spec.series[0]!.id)).toBe(false);
+    expect(toggleChartSeries(withHiddenSecond, spec.series[0]!.id)).toBe(withHiddenSecond);
+
+    const restored = toggleChartSeries(withHiddenSecond, spec.series[1]!.id);
+    expect(projectVisibleChartSeries(restored, [], resolved).map((series) => series.id))
+      .toEqual(spec.series.map((series) => series.id));
   });
 
   test("includes volume in fresh price and followed-ticker defaults", () => {
@@ -217,12 +328,16 @@ describe("chart composer presets and formulas", () => {
     });
   });
 
-  test("uses period-end timestamps when a financial series changes to columns", () => {
+  test("keeps financial timing independent from visual style", () => {
     const revenue = buildCustomChartPreset("AAPL:revenue").series[0]!;
-    const columns = applySeriesStyle(revenue, "columns");
+    const line = applySeriesStyle(revenue, "line");
+    const available = applySeriesTimestampMode(revenue, "available-at");
+    const columns = applySeriesStyle(available, "columns");
 
+    expect(line.interpolation).toBe("none");
+    expect(line.source).toMatchObject({ timestampMode: "period-end" });
     expect(columns.interpolation).toBe("none");
-    expect(columns.source).toMatchObject({ timestampMode: "period-end" });
+    expect(columns.source).toMatchObject({ timestampMode: "available-at" });
     expect(applySeriesStyle(columns, "line")).toMatchObject({
       interpolation: "none",
       source: {
@@ -279,7 +394,10 @@ describe("chart composer presets and formulas", () => {
     const comparison = buildComparisonChartPreset(["AAPL", "MSFT"]);
     const customized = {
       ...comparison,
-      panels: [{ id: "main", label: "Relative performance", height: 0.72, scale: "log" as const }],
+      panels: [
+        { id: "main", label: "Relative performance", height: 0.72, scale: "log" as const },
+        { id: "notes", label: "Reserved", height: 0.4 },
+      ],
     };
 
     const withIndicators = setBuiltinStudies(customized, ["rsi14"]);
@@ -293,6 +411,11 @@ describe("chart composer presets and formulas", () => {
     expect(withIndicators.panels.find((panel) => panel.id === "rsi")).toMatchObject({
       label: "RSI",
       height: 0.28,
+    });
+    expect(withIndicators.panels).toContainEqual({
+      id: "notes",
+      label: "Reserved",
+      height: 0.4,
     });
 
     const withFormula = setPairStudies(withIndicators, ["ratio"]);
@@ -314,6 +437,15 @@ describe("chart composer presets and formulas", () => {
       height: 0.41,
       scale: "log",
     });
+
+    const withoutManagedStudies = setPairStudies(setBuiltinStudies(rebound, []), []);
+    expect(withoutManagedStudies.panels.some((panel) => panel.id === "rsi")).toBe(false);
+    expect(withoutManagedStudies.panels.some((panel) => panel.id === "formula")).toBe(false);
+    expect(withoutManagedStudies.panels).toContainEqual({
+      id: "notes",
+      label: "Reserved",
+      height: 0.4,
+    });
   });
 });
 
@@ -331,7 +463,7 @@ describe("chart composer spec persistence", () => {
     });
 
     expect(parsed?.series[0]).toMatchObject({
-      style: "step",
+      style: "columns",
       source: { kind: "security", fieldId: "fundamental.totalRevenue" },
     });
     expect(parsed?.panels[0]?.scale).toBe("linear");
@@ -360,6 +492,29 @@ describe("chart composer spec persistence", () => {
     })).toBeNull();
   });
 
+  test("round-trips independent financial style and timing choices", () => {
+    const base = buildCustomChartPreset("AAPL:revenue, MSFT:revenue");
+    const authored = {
+      ...base,
+      series: [
+        applySeriesStyle(base.series[0]!, "line"),
+        applySeriesTimestampMode(
+          applySeriesStyle(base.series[1]!, "columns"),
+          "available-at",
+        ),
+      ],
+    };
+
+    const parsed = parseChartSpec(serializeChartSpec(authored));
+    expect(parsed?.series.map((series) => ({
+      style: series.style,
+      timestampMode: series.source.kind === "security" ? series.source.timestampMode : undefined,
+    }))).toEqual([
+      { style: "line", timestampMode: "period-end" },
+      { style: "columns", timestampMode: "available-at" },
+    ]);
+  });
+
   test("rejects chart specs authored by a newer unsupported version", () => {
     const current = buildPriceChartPreset("AAPL");
     expect(parseChartSpec({ ...current, version: current.version + 1 })).toBeNull();
@@ -384,8 +539,14 @@ describe("chart composer CLI options", () => {
     expect(comparison.viewport).toMatchObject({ range: "3M", resolution: "1h" });
     expect(comparison.series.every((series) => series.transform === "raw")).toBe(true);
 
+    const initialFinancial = buildCustomChartPreset("AAPL:revenue");
     const financial = applyChartComposerCapabilityOptions(
-      buildCustomChartPreset("AAPL:revenue"),
+      {
+        ...initialFinancial,
+        series: [
+          applySeriesTimestampMode(initialFinancial.series[0]!, "available-at"),
+        ],
+      },
       "fundamental-series",
       { metric: "freeCashFlow", period: "annual", periods: 6 },
     );

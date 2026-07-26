@@ -52,6 +52,7 @@ export function useAppPaneSettingsRuntime({
     };
 
     await dialog.alert({
+      closeOnClickOutside: true,
       content: (ctx: AlertContext) => (
         <PaneSettingsDialogContent
           {...ctx}

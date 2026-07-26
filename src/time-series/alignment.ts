@@ -41,7 +41,7 @@ function sortedUniquePoints(points: readonly TimeSeriesPoint[]): TimeSeriesPoint
   return [...byTime.values()].sort((left, right) => left.date.getTime() - right.date.getTime());
 }
 
-function effectivePointTime(point: TimeSeriesPoint): number {
+export function effectiveTimeSeriesPointTime(point: TimeSeriesPoint): number {
   const pointTime = point.date.getTime();
   const availableTime = point.availableAt?.getTime();
   return finiteNumber(availableTime) ? Math.max(pointTime, availableTime) : pointTime;
@@ -69,7 +69,7 @@ export function alignTimeSeries(
       for (const point of entry.points) {
         const time = point.date.getTime();
         if (time >= start && time <= end) timeline.add(time);
-        const effectiveTime = effectivePointTime(point);
+        const effectiveTime = effectiveTimeSeriesPointTime(point);
         if (effectiveTime !== time && effectiveTime >= start && effectiveTime <= end) {
           timeline.add(effectiveTime);
         }
@@ -78,7 +78,7 @@ export function alignTimeSeries(
   }
 
   const exactMaps = series.map((entry) => (
-    new Map(entry.points.map((point) => [effectivePointTime(point), point]))
+    new Map(entry.points.map((point) => [effectiveTimeSeriesPointTime(point), point]))
   ));
   const sortedTimes = [...timeline].sort((left, right) => left - right);
   const rows: AlignedTimeSeriesRow[] = [];
@@ -99,7 +99,7 @@ export function alignTimeSeries(
       let previous: TimeSeriesPoint | null = null;
       let previousEligibleAt = Number.NEGATIVE_INFINITY;
       for (const point of entry.points) {
-        const eligibleAt = effectivePointTime(point);
+        const eligibleAt = effectiveTimeSeriesPointTime(point);
         if (eligibleAt <= time && eligibleAt >= previousEligibleAt) {
           previous = point;
           previousEligibleAt = eligibleAt;
@@ -150,7 +150,7 @@ export function clipSeriesToWindow(
   });
   if (includeStepAnchor && series.interpolation === "step-after") {
     const anchor = [...sorted].reverse().find((point) => (
-      effectivePointTime(point) <= startTime && point.date.getTime() < startTime
+      effectiveTimeSeriesPointTime(point) <= startTime && point.date.getTime() < startTime
     ));
     if (anchor) visible.unshift(anchor);
   }

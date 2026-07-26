@@ -1,6 +1,10 @@
 import type { ChartResolution, TimeRange } from "../components/chart/core/types";
 import { getChartResolutionLabel } from "../components/chart/core/resolution";
-import { canonicalTimeSeriesFieldId, getTimeSeriesField } from "./field-catalog";
+import {
+  canonicalTimeSeriesFieldId,
+  getTimeSeriesField,
+  isFundamentalFieldId,
+} from "./field-catalog";
 import {
   isResolutionFineEnoughForMarketPeriod,
   maximumResolutionForMarketPeriod,
@@ -18,6 +22,7 @@ import {
   type SeriesInterpolation,
   type SeriesPeriod,
   type SeriesStyle,
+  type SeriesTimestampMode,
   type SeriesTransform,
   type SecuritySeriesSource,
 } from "./types";
@@ -136,7 +141,9 @@ function normalizeSource(value: unknown): ChartSeriesSource | null {
   const fieldId = nonEmptyString(source.fieldId);
   if (!instrument || !symbol || !fieldId) return null;
   const period = PERIODS.has(source.period as SeriesPeriod) ? source.period as SeriesPeriod : undefined;
-  const timestampMode = source.timestampMode === "period-end" ? "period-end" : "available-at";
+  const timestampMode = source.timestampMode === "period-end" || source.timestampMode === "available-at"
+    ? source.timestampMode as SeriesTimestampMode
+    : undefined;
   return {
     kind: "security",
     instrument: {
@@ -145,7 +152,7 @@ function normalizeSource(value: unknown): ChartSeriesSource | null {
     } as unknown as SecuritySeriesSource["instrument"],
     fieldId: canonicalTimeSeriesFieldId(fieldId),
     period,
-    timestampMode,
+    ...(timestampMode ? { timestampMode } : {}),
   };
 }
 
@@ -202,14 +209,14 @@ function normalizeSeries(
       ? requestedTransform
       : "raw"
     : requestedTransform ?? "raw";
-  const normalizedSource = source.kind === "security"
-    && (
-      source.fieldId.startsWith("fundamental.")
-      || source.fieldId.startsWith("valuation.")
-    )
+  const normalizedSource = source.kind === "security" && isFundamentalFieldId(source.fieldId)
     ? {
         ...source,
-        timestampMode: style === "columns" ? "period-end" as const : "available-at" as const,
+        // V1 specs created before timing became an independent control may not
+        // contain a timestamp mode. Preserve their legacy visual semantics once
+        // during normalization, then persist the explicit choice.
+        timestampMode: source.timestampMode
+          ?? (style === "columns" ? "period-end" as const : "available-at" as const),
       }
     : source;
   return {

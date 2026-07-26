@@ -65,7 +65,7 @@ describe("chart spec normalization and validation", () => {
     if (normalized.series[0]?.source.kind !== "security") throw new Error("expected security source");
     expect(normalized.series[0].source.fieldId).toBe("fundamental.totalRevenue");
     expect(normalized.series[0].source.instrument.symbol).toBe("MSFT");
-    expect(normalized.series[0].style).toBe("step");
+    expect(normalized.series[0].style).toBe("columns");
     expect(validateChartSpec(normalized).valid).toBe(true);
   });
 
@@ -89,8 +89,8 @@ describe("chart spec normalization and validation", () => {
     expect(validateChartSpec(normalized).valid).toBe(true);
   });
 
-  test("normalizes persisted financial columns to period-end timestamps", () => {
-    const normalized = normalizeChartSpec({
+  test("preserves explicit financial timing and migrates legacy timing once", () => {
+    const authored = {
       viewport: { range: "1Y", resolution: "auto" },
       panels: [{ id: "main" }],
       series: [{
@@ -100,7 +100,6 @@ describe("chart spec normalization and validation", () => {
           instrument: { symbol: "AAPL" },
           fieldId: "fundamental.totalRevenue",
           period: "quarterly",
-          timestampMode: "available-at",
         },
         style: "columns",
         transform: "raw",
@@ -109,41 +108,44 @@ describe("chart spec normalization and validation", () => {
         interpolation: "none",
       }],
       studies: [],
-    });
+    } as const;
 
-    expect(normalized.series[0]?.source).toMatchObject({
-      kind: "security",
-      timestampMode: "period-end",
-    });
-
-    const line = normalizeChartSpec({
-      viewport: { range: "1Y", resolution: "auto" },
-      panels: [{ id: "main" }],
+    const explicitColumns = normalizeChartSpec({
+      ...authored,
       series: [{
-        id: "revenue",
-        source: {
-          kind: "security",
-          instrument: { symbol: "AAPL" },
-          fieldId: "fundamental.totalRevenue",
-          period: "quarterly",
-          timestampMode: "period-end",
-        },
+        ...authored.series[0],
+        source: { ...authored.series[0].source, timestampMode: "available-at" },
+      }],
+    });
+    expect(explicitColumns.series[0]?.source).toMatchObject({
+      kind: "security",
+      timestampMode: "available-at",
+    });
+
+    const explicitLine = normalizeChartSpec({
+      ...authored,
+      series: [{
+        ...authored.series[0],
+        source: { ...authored.series[0].source, timestampMode: "period-end" },
         style: "line",
-        transform: "raw",
-        axis: "right",
-        panelId: "main",
         interpolation: "step-after",
       }],
-      studies: [],
     });
-    expect(line.series[0]).toMatchObject({
+    expect(explicitLine.series[0]).toMatchObject({
       style: "line",
       interpolation: "none",
       source: {
         kind: "security",
-        timestampMode: "available-at",
+        timestampMode: "period-end",
       },
     });
+
+    expect(normalizeChartSpec(authored).series[0]?.source)
+      .toMatchObject({ timestampMode: "period-end" });
+    expect(normalizeChartSpec({
+      ...authored,
+      series: [{ ...authored.series[0], style: "line" }],
+    }).series[0]?.source).toMatchObject({ timestampMode: "available-at" });
   });
 
   test("rejects annual QoQ, duplicate OHLC series, and missing study inputs", () => {

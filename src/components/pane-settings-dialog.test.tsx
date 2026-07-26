@@ -4,16 +4,22 @@ import type { PluginRegistry } from "../plugins/registry";
 import type {
   PaneSettingActionContext,
   PaneSettingActionField,
+  PaneSettingField,
   PaneSettingsContext,
 } from "../types/plugin";
 import { TestDialogProvider, testRender } from "../renderers/opentui/test-utils";
+import { useDialog } from "../ui/dialog";
 import { PaneSettingsDialogContent } from "./pane-settings-dialog";
 import { TuiPaneSettingsDialogBody } from "./pane-settings-dialog/tui";
+import { Button } from "./ui";
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined;
 
-afterEach(() => {
-  testSetup?.renderer.destroy();
+afterEach(async () => {
+  if (!testSetup) return;
+  await act(async () => {
+    testSetup!.renderer.destroy();
+  });
   testSetup = undefined;
 });
 
@@ -50,6 +56,44 @@ function makeRegistry(
     openCommandBar: options.openCommandBar ?? (() => {}),
     notify: () => {},
   } as unknown as PluginRegistry;
+}
+
+function NestedSettingsHarness({
+  field,
+  applyFieldValue,
+}: {
+  field: PaneSettingField;
+  applyFieldValue: (paneId: string, field: PaneSettingField, value: unknown) => Promise<void>;
+}) {
+  const dialog = useDialog();
+  const registry = {
+    resolvePaneSettings: () => ({
+      paneId: context.paneId,
+      pane: { title: "Chart", paneId: "chart-composer" },
+      paneDef: { name: "Chart" },
+      settingsDef: { title: "Chart Settings", fields: [field] },
+      context,
+    }),
+    openCommandBar: () => {},
+    notify: () => {},
+  } as unknown as PluginRegistry;
+  return (
+    <Button
+      label="Open settings"
+      onPress={() => {
+        void dialog.alert({
+          content: (ctx: { dismiss: () => void }) => (
+            <PaneSettingsDialogContent
+              {...ctx}
+              paneId={context.paneId}
+              pluginRegistry={registry}
+              applyFieldValue={applyFieldValue}
+            />
+          ),
+        });
+      }}
+    />
+  );
 }
 
 describe("pane settings action rows", () => {
@@ -132,5 +176,60 @@ describe("pane settings action rows", () => {
     });
 
     expect(activated).toEqual([enabled.key]);
+  });
+
+  test("routes keyboard input to a nested select instead of the parent settings list", async () => {
+    const applied: unknown[] = [];
+    const field: PaneSettingField = {
+      key: "range",
+      label: "Range",
+      type: "select",
+      options: [
+        { value: "1M", label: "1M" },
+        { value: "1Y", label: "1Y" },
+      ],
+    };
+    testSetup = await testRender(
+      <NestedSettingsHarness
+        field={field}
+        applyFieldValue={async (_paneId, _field, value) => {
+          applied.push(value);
+        }}
+      />,
+      { width: 72, height: 16 },
+    );
+    await testSetup.renderOnce();
+    const openRow = testSetup.captureCharFrame().split("\n")
+      .findIndex((line) => line.includes("Open settings"));
+    expect(openRow).toBeGreaterThanOrEqual(0);
+
+    await act(async () => {
+      await testSetup!.mockMouse.click(2, openRow);
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame()).toContain("Chart Settings");
+
+    await act(async () => {
+      testSetup!.mockInput.pressEnter();
+      await Promise.resolve();
+      await Promise.resolve();
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame()).toContain("1Y");
+
+    await act(async () => {
+      testSetup!.mockInput.pressArrow("down");
+      await Bun.sleep(10);
+      await testSetup!.renderOnce();
+      await testSetup!.renderOnce();
+    });
+    await act(async () => {
+      testSetup!.mockInput.pressEnter();
+      await Promise.resolve();
+      await Promise.resolve();
+      await testSetup!.renderOnce();
+    });
+
+    expect(applied).toEqual(["1Y"]);
   });
 });

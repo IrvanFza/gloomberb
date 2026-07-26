@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box } from "../../../ui";
+import { Box, Text } from "../../../ui";
 import {
   ChoiceDialog,
   Tabs,
@@ -13,7 +13,7 @@ import {
 import { CompositeChart } from "../../../components/chart/composite";
 import type { PaneProps, TickerResearchTabProps } from "../../../types/plugin";
 import type { ChartResolution, TimeRange } from "../../../components/chart/core/types";
-import type { ChartSeriesSpec, ChartSpec, SeriesStyle } from "../../../time-series/types";
+import type { ChartSpec, SeriesStyle } from "../../../time-series/types";
 import { useResolvedChartSpec } from "../../../time-series/hooks";
 import { useShortcut } from "../../../react/input";
 import { useDialog, useDialogState, type PromptContext } from "../../../ui/dialog";
@@ -30,13 +30,17 @@ import { SeriesEditorDialog } from "./editor";
 import { DateWindowDialog, type DateWindowDialogResult } from "./date-window-dialog";
 import { chartComposerSemanticMetadata } from "./semantic";
 import {
+  canToggleChartSeries,
   CHART_SPEC_SETTING_KEY,
   parseChartSpecOr,
+  projectVisibleChartSeries,
+  toggleChartSeries,
 } from "./chart-spec";
 import {
   buildEmptyChartPreset,
   buildPriceChartPreset,
   applySeriesStyle,
+  chartSeriesLabel,
   getSelectedBuiltinStudies,
   getSelectedPairStudies,
   setBuiltinStudies,
@@ -50,13 +54,19 @@ import {
   CHART_RANGES as RANGES,
   CHART_RESOLUTIONS as RESOLUTIONS,
   CHART_STUDY_OPTIONS,
-  getChartPrimaryStyles,
+  getChartInlineStyles,
+  getChartInlineStyleTarget,
 } from "./settings";
 import { resolveChartComposerShortcut } from "./shortcuts";
 import { ChartSeriesQuickAdd } from "./quick-add";
 
 const RANGE_TABS = RANGES.map((range, index) => ({ label: `${index + 1}:${range}`, value: range }));
 const RESOLUTION_TABS = RESOLUTIONS.map((value) => ({ label: value.toUpperCase(), value }));
+const RESOLUTION_TABS_WIDTH = RESOLUTION_TABS.reduce(
+  (width, tab) => width + [...tab.label].length + 1,
+  0,
+);
+const AUTO_VIEWPORT_DEBOUNCE_MS = 120;
 
 function footerAnchorPoint(event?: PaneFooterPressEvent): { x: number; y: number } | undefined {
   const x = event?.pixelX;
@@ -74,10 +84,6 @@ export interface ChartComposerSurfaceProps {
   height: number;
   footerId: string;
   onCapture?: (capturing: boolean) => void;
-}
-
-function replacePrimarySeries(spec: ChartSpec, next: ChartSeriesSpec): ChartSpec {
-  return { ...spec, series: [next, ...spec.series.slice(1)] };
 }
 
 function isPriceStudyTarget(spec: ChartSpec): boolean {
@@ -100,17 +106,52 @@ export function ChartComposerSurface({
   const dispatch = useAppDispatch();
   const paneId = usePaneInstanceId();
   const dialogOpen = useDialogState((state) => state.isOpen);
-  const resolution = useResolvedChartSpec(spec);
+  const authoredViewportKey = useMemo(() => JSON.stringify({
+    range: spec.viewport.range,
+    resolution: spec.viewport.resolution,
+    dateWindow: spec.viewport.dateWindow ?? null,
+    sources: spec.series.map((entry) => entry.source.kind === "security"
+      ? [
+          entry.id,
+          entry.source.kind,
+          entry.source.instrument.symbol,
+          entry.source.instrument.exchange ?? "",
+          entry.source.fieldId,
+          entry.source.period ?? "auto",
+        ]
+      : [entry.id, entry.source.kind, entry.source.seriesId]),
+  }), [spec.series, spec.viewport.dateWindow, spec.viewport.range, spec.viewport.resolution]);
+  const [autoViewportState, setAutoViewportState] = useState<{
+    key: string;
+    viewport: { start: Date; end: Date };
+  } | null>(null);
+  const autoViewportTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const autoViewport = autoViewportState?.key === authoredViewportKey
+    && spec.viewport.resolution === "auto"
+    ? autoViewportState.viewport
+    : null;
+  const targetPointCount = Math.max(60, Math.floor(width * 1.25));
+  const resolution = useResolvedChartSpec(spec, { autoViewport, targetPointCount });
   const selectedStudies = getSelectedBuiltinStudies(spec);
   const selectedPairStudies = getSelectedPairStudies(spec);
-  const styles = useMemo(() => getChartPrimaryStyles(spec), [spec]);
+  const inlineStyleTarget = useMemo(() => getChartInlineStyleTarget(spec), [spec]);
+  const styles = useMemo(() => getChartInlineStyles(spec), [spec]);
   const styleTabs = useMemo(
     () => styles.map((value) => ({ label: value.toUpperCase(), value })),
     [styles],
   );
-  const primaryStyle = spec.series[0]?.style ?? "line";
+  const inlineStyle = inlineStyleTarget?.style ?? "line";
+  const inlineStyleLabel = inlineStyleTarget ? chartSeriesLabel(inlineStyleTarget) : "";
   const viewport = resolution.viewport;
   const baseSeriesIds = useMemo(() => new Set(spec.series.map((series) => series.id)), [spec.series]);
+  const plottedSeries = useMemo(
+    () => projectVisibleChartSeries(
+      spec,
+      resolution.bufferedSeries ?? resolution.series,
+      resolution.legendSeries,
+    ),
+    [resolution.bufferedSeries, resolution.legendSeries, resolution.series, spec],
+  );
   const [interactionCaptured, setInteractionCapturedState] = useState(false);
   const [quickAddWidth, setQuickAddWidth] = useState(14);
   const interactionCaptureRef = useRef(false);
@@ -142,6 +183,45 @@ export function ChartComposerSurface({
   const activatePane = useCallback(() => {
     if (!focused) dispatch({ type: "FOCUS_PANE", paneId });
   }, [dispatch, focused, paneId]);
+  useEffect(() => {
+    if (autoViewportTimerRef.current !== null) {
+      clearTimeout(autoViewportTimerRef.current);
+      autoViewportTimerRef.current = null;
+    }
+    setAutoViewportState((current) => current?.key === authoredViewportKey ? current : null);
+    return () => {
+      if (autoViewportTimerRef.current !== null) {
+        clearTimeout(autoViewportTimerRef.current);
+        autoViewportTimerRef.current = null;
+      }
+    };
+  }, [authoredViewportKey]);
+  const handleChartViewportChange = useCallback((next: { start: Date; end: Date } | null) => {
+    if (autoViewportTimerRef.current !== null) {
+      clearTimeout(autoViewportTimerRef.current);
+      autoViewportTimerRef.current = null;
+    }
+    if (spec.viewport.resolution !== "auto" || !next) {
+      setAutoViewportState(null);
+      return;
+    }
+    const start = next.start.getTime();
+    const end = next.end.getTime();
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
+    autoViewportTimerRef.current = globalThis.setTimeout(() => {
+      autoViewportTimerRef.current = null;
+      setAutoViewportState((current) => (
+        current?.key === authoredViewportKey
+          && current.viewport.start.getTime() === start
+          && current.viewport.end.getTime() === end
+          ? current
+          : {
+              key: authoredViewportKey,
+              viewport: { start: new Date(start), end: new Date(end) },
+            }
+      ));
+    }, AUTO_VIEWPORT_DEBOUNCE_MS);
+  }, [authoredViewportKey, spec.viewport.resolution]);
 
   useRemoteUiNode({
     role: "chart-data",
@@ -153,7 +233,8 @@ export function ChartComposerSurface({
     setInteractionCaptured("prompt", true);
     try {
       const next = await dialog.prompt<ChartSpec | null>({
-        closeOnClickOutside: false,
+        closeOnClickOutside: true,
+        size: "large",
         content: (context: PromptContext<ChartSpec | null>) => (
           <SeriesEditorDialog {...context} initialSpec={spec} />
         ),
@@ -174,7 +255,7 @@ export function ChartComposerSurface({
     setInteractionCaptured("prompt", true);
     try {
       const result = await dialog.prompt<DateWindowDialogResult>({
-        closeOnClickOutside: false,
+        closeOnClickOutside: true,
         content: (context: PromptContext<DateWindowDialogResult>) => (
           <DateWindowDialog {...context} initial={spec.viewport.dateWindow} />
         ),
@@ -198,11 +279,15 @@ export function ChartComposerSurface({
   const setResolution = useCallback((next: ChartResolution) => {
     setSpec({ ...spec, viewport: { ...spec.viewport, resolution: next } });
   }, [setSpec, spec]);
-  const setPrimaryStyle = useCallback((style: SeriesStyle) => {
-    const primary = spec.series[0];
-    if (!primary || !styles.includes(style)) return;
-    setSpec(replacePrimarySeries(spec, applySeriesStyle(primary, style)));
-  }, [setSpec, spec, styles]);
+  const setInlineStyle = useCallback((style: SeriesStyle) => {
+    if (!inlineStyleTarget || !styles.includes(style)) return;
+    setSpec({
+      ...spec,
+      series: spec.series.map((series) => (
+        series.id === inlineStyleTarget.id ? applySeriesStyle(series, style) : series
+      )),
+    });
+  }, [inlineStyleTarget, setSpec, spec, styles]);
   const openRangePicker = useCallback(async () => {
     setInteractionCaptured("prompt", true);
     try {
@@ -260,29 +345,33 @@ export function ChartComposerSurface({
         content: (context: PromptContext<string>) => (
           <ChoiceDialog
             {...context}
-            title="Chart Mode"
-            selectedChoiceId={primaryStyle}
+            title={`${inlineStyleLabel} Style`}
+            selectedChoiceId={inlineStyle}
             choices={styles.map((value) => ({
               id: value,
               label: value.toUpperCase(),
-              description: `Draw the primary series as ${value}.`,
+              description: `Draw ${inlineStyleLabel} as ${value}.`,
             }))}
           />
         ),
       }).catch(() => "");
-      if (styles.includes(next as SeriesStyle)) setPrimaryStyle(next as SeriesStyle);
+      if (styles.includes(next as SeriesStyle)) setInlineStyle(next as SeriesStyle);
     } finally {
       setInteractionCaptured("prompt", false);
     }
-  }, [dialog, primaryStyle, setInteractionCaptured, setPrimaryStyle, styles]);
+  }, [dialog, inlineStyle, inlineStyleLabel, setInlineStyle, setInteractionCaptured, styles]);
   const toggleSeries = useCallback((seriesId: string) => {
-    setSpec({
-      ...spec,
-      series: spec.series.map((series) => series.id === seriesId
-        ? { ...series, visible: series.visible === false }
-        : series),
-    });
+    const next = toggleChartSeries(spec, seriesId);
+    if (next !== spec) setSpec(next);
   }, [setSpec, spec]);
+  const isSeriesToggleable = useCallback(
+    (series: { id: string }) => baseSeriesIds.has(series.id) && canToggleChartSeries(spec, series.id),
+    [baseSeriesIds, spec],
+  );
+  const handleQuickAddActiveChange = useCallback(
+    (active: boolean) => setInteractionCaptured("quick-add", active),
+    [setInteractionCaptured],
+  );
   const openIndicators = useCallback((event?: PaneFooterPressEvent) => {
     indicatorsDialogRef.current?.open(footerAnchorPoint(event));
   }, []);
@@ -384,40 +473,57 @@ export function ChartComposerSurface({
 
   return (
     <Box flexDirection="column" width={width} height={height} backgroundColor={colors.panel}>
-      <Box flexDirection="row" height={1} paddingX={1} gap={1} overflow="hidden">
+      <Box flexDirection="row" height={1} paddingX={1} gap={0} overflow="hidden">
         <Box flexShrink={0} height={1} maxWidth={52} overflow="hidden">
           <Tabs
             tabs={RANGE_TABS}
             activeValue={spec.viewport.dateWindow ? null : spec.viewport.range}
             onSelect={(value) => setRange(value as TimeRange)}
             compact
+            dense
             variant="bare"
             focused={focused}
             keyboardNavigation={false}
           />
         </Box>
 
-        <Box flexGrow={1} flexShrink={1} minWidth={0} maxWidth={82} height={1} overflow="hidden">
+        <Box flexGrow={1} minWidth={0} height={1} />
+        <Box
+          flexShrink={1}
+          minWidth={0}
+          width={RESOLUTION_TABS_WIDTH}
+          height={1}
+          overflow="hidden"
+          data-gloom-role="chart-resolution-control"
+        >
           <Tabs
             tabs={RESOLUTION_TABS}
             activeValue={spec.viewport.resolution}
             onSelect={(value) => setResolution(value as ChartResolution)}
             compact
+            dense
             variant="bare"
             focused={focused}
             keyboardNavigation={false}
           />
         </Box>
-        {width >= 132 && (
-          <Box flexGrow={1} />
-        )}
-        {width >= 132 && (
-          <Box flexShrink={0} maxWidth={48} height={1} overflow="hidden">
+        {width >= 132 && inlineStyleTarget && (
+          <Box
+            flexDirection="row"
+            flexShrink={0}
+            maxWidth={64}
+            height={1}
+            overflow="hidden"
+            data-gloom-role="chart-inline-style"
+            data-gloom-label={`${inlineStyleLabel} style`}
+          >
+            <Text fg={colors.textDim}>{`${inlineStyleLabel}: `}</Text>
             <Tabs
               tabs={styleTabs}
-              activeValue={primaryStyle}
-              onSelect={(value) => setPrimaryStyle(value as SeriesStyle)}
+              activeValue={inlineStyle}
+              onSelect={(value) => setInlineStyle(value as SeriesStyle)}
               compact
+              dense
               variant="bare"
               focused={focused}
               keyboardNavigation={false}
@@ -456,7 +562,7 @@ export function ChartComposerSurface({
 
       <Box flexGrow={1} minHeight={4}>
         <CompositeChart
-          series={resolution.bufferedSeries ?? resolution.series}
+          series={plottedSeries}
           legendSeries={resolution.legendSeries}
           panels={spec.panels}
           viewport={viewport}
@@ -464,9 +570,10 @@ export function ChartComposerSurface({
           height={Math.max(4, height - 1)}
           focused={focused}
           interactive={surfaceInteractive}
+          onViewportChange={handleChartViewportChange}
           onActivate={activatePane}
           onToggleSeries={toggleSeries}
-          isSeriesToggleable={(series) => baseSeriesIds.has(series.id)}
+          isSeriesToggleable={isSeriesToggleable}
           emptyMessage={emptyMessage}
           legendAccessory={(
             <ChartSeriesQuickAdd
@@ -478,7 +585,7 @@ export function ChartComposerSurface({
               shortcutEnabled={surfaceInteractive}
               shortcutBlocked={dialogOpen}
               onActivatePane={activatePane}
-              onActiveChange={(active) => setInteractionCaptured("quick-add", active)}
+              onActiveChange={handleQuickAddActiveChange}
               onWidthChange={setQuickAddWidth}
             />
           )}

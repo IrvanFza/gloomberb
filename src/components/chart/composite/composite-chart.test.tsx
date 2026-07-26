@@ -244,6 +244,112 @@ describe("CompositeChart", () => {
     expect(testSetup.captureCharFrame()).toContain("OTHER Revenue");
   });
 
+  test("shows an explicit legend toggle action on hover", async () => {
+    const toggled: string[] = [];
+    testSetup = await testRender(
+      <CompositeChart
+        width={58}
+        height={10}
+        series={[
+          series("price", "main", "left", "USD", [100, 103, 101]),
+          series("revenue", "main", "right", "%", [4, 6, 8]),
+        ]}
+        panels={[{ id: "main" }]}
+        onToggleSeries={(seriesId) => toggled.push(seriesId)}
+      />,
+      { width: 60, height: 12 },
+    );
+
+    await act(async () => {
+      await testSetup!.renderOnce();
+    });
+    const firstLegendLine = testSetup.captureCharFrame().split("\n")[0]!;
+    const priceColumn = firstLegendLine.indexOf("ACME Price");
+    expect(priceColumn).toBeGreaterThan(0);
+
+    await act(async () => {
+      await testSetup!.mockMouse.moveTo(2, 5);
+      await testSetup!.mockMouse.moveTo(priceColumn, 0);
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame().split("\n")[0]).toContain("Hide");
+
+    await act(async () => {
+      await testSetup!.mockMouse.click(priceColumn, 0);
+      await testSetup!.renderOnce();
+    });
+    expect(toggled).toEqual(["price"]);
+  });
+
+  test("scrolls an overflowing legend horizontally", async () => {
+    const labels = ["FIRST LONG SERIES", "SECOND LONG SERIES", "THIRD LONG SERIES", "LAST LONG SERIES"];
+    const overflowingSeries = labels.map((label, index) => ({
+      ...series(`series-${index}`, "main", "left", "USD", [index + 1, index + 2]),
+      label,
+    }));
+    testSetup = await testRender(
+      <CompositeChart
+        width={38}
+        height={10}
+        series={overflowingSeries}
+        panels={[{ id: "main" }]}
+      />,
+      { width: 40, height: 12 },
+    );
+
+    await act(async () => {
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame().split("\n")[0]).toContain("FIRST LONG SERIES");
+    expect(testSetup.captureCharFrame().split("\n")[0]).not.toContain("LAST LONG SERIES");
+
+    await act(async () => {
+      for (let index = 0; index < 120; index += 1) {
+        await testSetup!.mockMouse.scroll(20, 0, "down");
+      }
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame().split("\n")[0]).toContain("LAST LONG SERIES");
+  });
+
+  test("reaches and toggles overflowing legend series from the keyboard", async () => {
+    const toggled: string[] = [];
+    const labels = ["FIRST LONG SERIES", "SECOND LONG SERIES", "THIRD LONG SERIES", "LAST LONG SERIES"];
+    const overflowingSeries = labels.map((label, index) => ({
+      ...series(`series-${index}`, "main", "left", "USD", [index + 1, index + 2]),
+      label,
+    }));
+    testSetup = await testRender(
+      <InputHostProvider host={chartInputHost}>
+        <CompositeChart
+          width={38}
+          height={10}
+          focused
+          series={overflowingSeries}
+          panels={[{ id: "main" }]}
+          onToggleSeries={(seriesId) => toggled.push(seriesId)}
+        />
+      </InputHostProvider>,
+      { width: 40, height: 12 },
+    );
+
+    await act(async () => {
+      await testSetup!.renderOnce();
+      for (let index = 0; index < overflowingSeries.length; index += 1) {
+        chartShortcut?.(keyEvent("]"));
+      }
+      await testSetup!.renderOnce();
+      await testSetup!.renderOnce();
+    });
+    expect(testSetup.captureCharFrame().split("\n")[0]).toContain("LAST LONG SERIES");
+
+    await act(async () => {
+      chartShortcut?.(keyEvent("space"));
+      await testSetup!.renderOnce();
+    });
+    expect(toggled).toEqual(["series-3"]);
+  });
+
   test("keeps the legend accessory visible when the pane is narrower than its legend", async () => {
     testSetup = await testRender(
       <CompositeChart
@@ -336,6 +442,7 @@ describe("CompositeChart", () => {
   });
 
   test("zooms with plus and resets the interaction viewport with zero", async () => {
+    const viewportChanges: Array<{ start: string; end: string } | null> = [];
     testSetup = await testRender(
       <InputHostProvider host={chartInputHost}>
         <CompositeChart
@@ -348,6 +455,9 @@ describe("CompositeChart", () => {
             start: new Date("2025-01-01T00:00:00.000Z"),
             end: new Date("2025-01-09T00:00:00.000Z"),
           }}
+          onViewportChange={(next) => viewportChanges.push(next
+            ? { start: next.start.toISOString(), end: next.end.toISOString() }
+            : null)}
         />
       </InputHostProvider>,
       { width: 62, height: 14 },
@@ -355,6 +465,10 @@ describe("CompositeChart", () => {
 
     await act(async () => testSetup!.renderOnce());
     expect(testSetup.captureCharFrame()).toContain("2025-01-01");
+    expect(viewportChanges).toEqual([{
+      start: "2025-01-01T00:00:00.000Z",
+      end: "2025-01-09T00:00:00.000Z",
+    }]);
 
     const zoomIn = keyEvent("=");
     zoomIn.sequence = "+";
@@ -364,10 +478,15 @@ describe("CompositeChart", () => {
 
     expect(zoomIn.defaultPrevented).toBe(true);
     expect(testSetup.captureCharFrame()).not.toContain("2025-01-01");
+    expect(viewportChanges.at(-1)?.start).not.toBe("2025-01-01T00:00:00.000Z");
 
     await act(async () => chartShortcut?.(keyEvent("0")));
     await act(async () => testSetup!.renderOnce());
     expect(testSetup.captureCharFrame()).toContain("2025-01-01");
+    expect(viewportChanges.at(-1)).toEqual({
+      start: "2025-01-01T00:00:00.000Z",
+      end: "2025-01-09T00:00:00.000Z",
+    });
   });
 
   test("activates and navigates a buffered viewport from the first mouse gesture", async () => {

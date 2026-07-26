@@ -2,15 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Box,
   ChartSurface,
+  ScrollBox,
   Text,
   useNativeRenderer,
   useUiCapabilities,
   useUiHost,
   type BoxRenderable,
   type ChartSurfaceProps,
+  type ScrollBoxRenderable,
 } from "../../../ui";
 import { useShortcut } from "../../../react/input";
-import { colors as themeColors } from "../../../theme/colors";
+import { colors as themeColors, hoverBg } from "../../../theme/colors";
+import { isPlainKey } from "../../../utils/keyboard";
 import { truncateWithEllipsis } from "../../../utils/text-wrap";
 import type { ResolvedSeries } from "../../../time-series/types";
 import {
@@ -29,6 +32,7 @@ import { PriceAxisLabels } from "../price-axis-labels";
 import {
   formatCompositeAxisValue,
   formatCompositeCursorDate,
+  formatCompositePointDetails,
   formatCompositeSeriesValue,
   formatCompositeTimeAxisDate,
 } from "./format";
@@ -46,6 +50,7 @@ import {
   zoomCompositeViewport,
   type CompositeViewportRange,
 } from "./interactions";
+import { buildCompositeColumnLayout, type CompositeColumnLayout } from "./column-layout";
 import { renderCompositePanelBitmap } from "./rasterizer";
 import {
   allocateCompositePanelHeights,
@@ -71,6 +76,7 @@ import type {
 // A short resize-only delay coalesces geometry churn without delaying
 // live-data paints or depending on a foreground animation frame.
 const DESKTOP_BITMAP_RESIZE_DEBOUNCE_MS = 32;
+const LEGEND_WHEEL_DELTA_PER_CELL = 8;
 
 function renderPanelBitmap(
   panel: CompositePanelScene,
@@ -202,6 +208,7 @@ function useCompositePanelBitmap({
 
 function resolvePanelCrosshair(
   panel: CompositePanelScene,
+  columnLayout: CompositeColumnLayout,
   bitmap: NativeChartBitmap | null,
   cursorXRatio: number | null,
   cursorYRatio: number | null,
@@ -209,7 +216,14 @@ function resolvePanelCrosshair(
 ): ChartSurfaceProps["crosshair"] {
   if (!bitmap || cursorXRatio === null || cursorYRatio === null) return null;
   const markers = panel.series.flatMap((series) => {
-    const cursorPoint = series.points.find((point) => Math.abs(point.xRatio - cursorXRatio) < 1e-9);
+    // Column cohorts are drawn at their group center, not each observation's
+    // own timestamp, so match the position the bar actually occupies.
+    const cursorPoint = series.points.find((point) => {
+      const xRatio = series.source.style === "columns"
+        ? columnLayout.groupByPoint.get(point)?.xRatio ?? point.xRatio
+        : point.xRatio;
+      return Math.abs(xRatio - cursorXRatio) < 1e-9;
+    });
     return cursorPoint
       ? [{
         pixelY: cursorPoint.yRatio * Math.max(bitmap.height - 1, 0),
@@ -308,9 +322,10 @@ function CompositePanelSurface({
   } | null>(null);
   const bitmapSize = useStaticChartBitmapSize(plotWidth, panel.height);
   const bitmap = useCompositePanelBitmap({ panel, bitmapSize, colors, isDesktopWeb });
+  const columnLayout = useMemo(() => buildCompositeColumnLayout(panel), [panel]);
   const crosshair = useMemo(
-    () => resolvePanelCrosshair(panel, bitmap, scene.cursorXRatio, activeCursorYRatio, colors.crosshair),
-    [activeCursorYRatio, bitmap, colors.crosshair, panel, scene.cursorXRatio],
+    () => resolvePanelCrosshair(panel, columnLayout, bitmap, scene.cursorXRatio, activeCursorYRatio, colors.crosshair),
+    [activeCursorYRatio, bitmap, colors.crosshair, columnLayout, panel, scene.cursorXRatio],
   );
   const bitmapLayers = useMemo(() => bitmap ? [bitmap] : null, [bitmap]);
   const textLines = useMemo(
@@ -388,9 +403,18 @@ function CompositePanelSurface({
     if (event.modifiers.ctrl && pointer) {
       const zoomIn = direction === "up" || direction === "left";
       const magnitude = Math.min(Math.max(Math.abs(event.scroll?.delta ?? 1), 1), 8);
+      const pointerRatio = pointer.cellX / Math.max(plotWidth - 1, 1);
+      const anchorDate = resolveCompositeCursorDate(scene, pointer.cellX);
+      const viewportSpan = Math.max(viewport.end.getTime() - viewport.start.getTime(), 1);
+      const viewportAnchorRatio = anchorDate
+        ? Math.max(0, Math.min(
+            1,
+            (anchorDate.getTime() - viewport.start.getTime()) / viewportSpan,
+          ))
+        : pointerRatio;
       onZoomViewport(
         zoomIn ? 1 + magnitude * 0.04 : 1 / (1 + magnitude * 0.04),
-        pointer.cellX / Math.max(plotWidth - 1, 1),
+        viewportAnchorRatio,
       );
       updateCursor(event);
       return;
@@ -474,6 +498,7 @@ function legendValue(
 function CompositeLegend({
   scene,
   series,
+  visibleSeriesIds,
   width,
   accessory,
   accessoryWidth,
@@ -481,9 +506,11 @@ function CompositeLegend({
   onActivate,
   onToggleSeries,
   isSeriesToggleable,
+  keyboardIndex,
 }: {
   scene: CompositeChartScene | null;
   series: ResolvedSeries[];
+  visibleSeriesIds: ReadonlySet<string>;
   width: number;
   accessory: CompositeChartProps["legendAccessory"];
   accessoryWidth: CompositeChartProps["legendAccessoryWidth"];
@@ -491,26 +518,35 @@ function CompositeLegend({
   onActivate: CompositeChartProps["onActivate"];
   onToggleSeries: CompositeChartProps["onToggleSeries"];
   isSeriesToggleable: CompositeChartProps["isSeriesToggleable"];
+  keyboardIndex?: number | null;
 }) {
+  const isDesktopWeb = useUiHost().kind === "desktop-web";
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null);
   const dateLabel = scene
     ? scene.cursorDate
       ? formatCompositeCursorDate(scene.cursorDate, scene.startTime, scene.endTime)
       : "Latest"
     : "";
-  const valueById = new Map(
-    scene?.cursorValues.map((entry) => [entry.seriesId, entry.value] as const) ?? [],
+  const cursorValueById = new Map(
+    scene?.cursorValues.map((entry) => [entry.seriesId, entry] as const) ?? [],
   );
   const entries = series.map((entry) => {
+    const toggleable = !!onToggleSeries && (isSeriesToggleable?.(entry) ?? true);
+    const cursorValue = cursorValueById.get(entry.id);
     const fullText = `${entry.label} ${legendValue(
       entry,
-      valueById.get(entry.id) ?? null,
+      cursorValue?.value ?? null,
       formatValue,
     )}`;
+    const details = formatCompositePointDetails(cursorValue?.point);
+    const tooltip = details ? `${fullText} · ${details}` : fullText;
     const textWidth = Math.max(1, Math.min(30, [...fullText].length));
     return {
       entry,
       text: truncateWithEllipsis(fullText, textWidth),
-      width: textWidth + 2,
+      width: textWidth + 2 + (toggleable ? 5 : 0),
+      toggleable,
+      tooltip,
     };
   });
   const desiredSeriesWidth = entries.reduce(
@@ -541,6 +577,57 @@ function CompositeLegend({
       width - dateWidth - dateSeriesGap - seriesWidth - resolvedAccessoryWidth,
     )
     : 0;
+  const keyboardEntryStart = keyboardIndex === null || keyboardIndex === undefined
+    ? null
+    : entries.slice(0, keyboardIndex).reduce(
+      (total, entry, index) => total + entry.width + (index > 0 ? 1 : 0),
+      0,
+    ) + (keyboardIndex > 0 ? 1 : 0);
+  const keyboardEntryEnd = keyboardEntryStart === null
+    ? null
+    : keyboardEntryStart + (entries[keyboardIndex!]?.width ?? 0);
+
+  useEffect(() => {
+    if (keyboardEntryStart === null || keyboardEntryEnd === null) return;
+    const scrollBox = scrollRef.current;
+    const viewportWidth = scrollBox?.viewport?.width || scrollBox?.width || seriesWidth;
+    if (!scrollBox || viewportWidth <= 0) return;
+    const currentLeft = scrollBox.scrollLeft ?? 0;
+    const nextLeft = keyboardEntryStart < currentLeft
+      ? keyboardEntryStart
+      : keyboardEntryEnd > currentLeft + viewportWidth
+        ? keyboardEntryEnd - viewportWidth
+        : currentLeft;
+    if (nextLeft === currentLeft) return;
+    scrollBox.scrollLeft = nextLeft;
+    scrollBox.scrollTo({ x: nextLeft, y: scrollBox.scrollTop });
+  }, [keyboardEntryEnd, keyboardEntryStart, seriesWidth]);
+  const handleMouseScroll = (event?: {
+    preventDefault?: () => void;
+    stopPropagation?: () => void;
+    scroll?: { direction?: string; delta?: number };
+  }) => {
+    const direction = event?.scroll?.direction;
+    const scrollBox = scrollRef.current;
+    const viewportWidth = scrollBox?.viewport?.width || scrollBox?.width || 0;
+    const contentWidth = Math.max(desiredSeriesWidth, scrollBox?.scrollWidth ?? 0);
+    if (!direction || !scrollBox || viewportWidth <= 0 || contentWidth <= viewportWidth) return;
+
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    const rawDelta = Math.abs(event.scroll?.delta ?? 1);
+    const deltaCells = Math.max(1, Math.round(rawDelta / LEGEND_WHEEL_DELTA_PER_CELL));
+    const directionSign = direction === "right" || direction === "down" ? 1 : -1;
+    const nextLeft = Math.max(
+      0,
+      Math.min(
+        contentWidth - viewportWidth,
+        (scrollBox.scrollLeft ?? 0) + directionSign * deltaCells,
+      ),
+    );
+    scrollBox.scrollLeft = nextLeft;
+    scrollBox.scrollTo({ x: nextLeft, y: scrollBox.scrollTop });
+  };
   return (
     <Box
       flexDirection="row"
@@ -558,24 +645,31 @@ function CompositeLegend({
       ) : null}
       {dateSeriesGap > 0 ? <Box width={dateSeriesGap} flexShrink={0} /> : null}
       {seriesWidth > 0 ? (
-        <Box
-          flexDirection="row"
+        <ScrollBox
+          ref={scrollRef}
           width={seriesWidth}
           height={1}
           flexShrink={0}
-          gap={1}
-          overflow="hidden"
+          scrollX
+          focusable={false}
+          horizontalScrollbarOptions={{ visible: false }}
+          onMouseScroll={handleMouseScroll}
+          data-gloom-role="composite-chart-legend-scroll"
         >
-          {entries.map(({ entry, text, width: entryWidth }) => {
-            const toggleable = !!onToggleSeries && (isSeriesToggleable?.(entry) ?? true);
-            return (
+          <Box flexDirection="row" width={desiredSeriesWidth} height={1} gap={1}>
+            {entries.map(({ entry, text, toggleable, tooltip, width: entryWidth }, index) => {
+              const entryVisible = visibleSeriesIds.has(entry.id);
+              return (
               <Box
                 key={entry.id}
                 flexDirection="row"
+                alignItems="center"
                 width={entryWidth}
                 height={1}
                 flexShrink={0}
                 overflow="hidden"
+                backgroundColor={keyboardIndex === index ? themeColors.selected : undefined}
+                hoverBackgroundColor={toggleable ? hoverBg() : undefined}
                 onMouseDown={toggleable ? (event: ChartMouseEvent) => {
                   onActivate?.();
                   consumeChartMouseEvent(event);
@@ -583,14 +677,40 @@ function CompositeLegend({
                 } : undefined}
                 cursor={toggleable ? "pointer" : undefined}
                 data-gloom-interactive={toggleable ? "true" : undefined}
-                data-gloom-label={entry.label}
+                data-gloom-role="composite-chart-legend-series"
+                data-gloom-label={`${toggleable
+                  ? `${entryVisible ? "Hide" : "Show"} `
+                  : ""}${tooltip}`}
+                data-visible={entryVisible ? "true" : "false"}
+                title={isDesktopWeb ? tooltip : undefined}
               >
-                <Text fg={entry.color}>● </Text>
-                <Text fg={themeColors.text}>{text}</Text>
+                {isDesktopWeb ? (
+                  <Box
+                    flexShrink={0}
+                    style={{
+                      width: 8,
+                      height: 8,
+                      marginInlineEnd: 6,
+                      borderRadius: 999,
+                      border: `1px solid ${entry.color}`,
+                      backgroundColor: entryVisible ? entry.color : "transparent",
+                    }}
+                    data-gloom-role="composite-chart-legend-marker"
+                  />
+                ) : (
+                  <Text fg={entryVisible ? entry.color : themeColors.textMuted}>● </Text>
+                )}
+                <Text fg={entryVisible ? themeColors.text : themeColors.textDim}>{text}</Text>
+                {toggleable ? (
+                  <Text fg={themeColors.textMuted}>
+                    {entryVisible ? " Hide" : " Show"}
+                  </Text>
+                ) : null}
               </Box>
-            );
-          })}
-        </Box>
+              );
+            })}
+          </Box>
+        </ScrollBox>
       ) : null}
       {accessorySpacerWidth > 0 ? (
         <Box width={accessorySpacerWidth} flexShrink={0} />
@@ -630,12 +750,14 @@ export function CompositeChart({
   emptyMessage = "No chart data",
   formatValue,
   onCursorDateChange,
+  onViewportChange,
   onActivate,
   onToggleSeries,
   isSeriesToggleable,
 }: CompositeChartProps) {
   const { cellWidthPx = 8 } = useUiCapabilities();
   const [internalCursorDate, setInternalCursorDate] = useState<Date | null>(null);
+  const [legendKeyboardIndex, setLegendKeyboardIndex] = useState<number | null>(null);
   const resolvedCursorDate = cursorDate === undefined ? internalCursorDate : cursorDate;
   const totalWidth = Math.max(1, Math.floor(width));
   const totalHeight = Math.max(1, Math.floor(height));
@@ -644,6 +766,17 @@ export function CompositeChart({
     () => (legendSeries ?? visibleSeries).filter((entry) => entry.points.length > 0),
     [legendSeries, visibleSeries],
   );
+  const visibleSeriesIds = useMemo(
+    () => new Set(visibleSeries.map((entry) => entry.id)),
+    [visibleSeries],
+  );
+  useEffect(() => {
+    setLegendKeyboardIndex((current) => (
+      current === null || visibleLegendSeries.length === 0
+        ? null
+        : Math.min(current, visibleLegendSeries.length - 1)
+    ));
+  }, [visibleLegendSeries.length]);
   const navigationBounds = useMemo(
     () => resolveCompositeNavigationBounds(visibleSeries, viewport),
     [viewport, visibleSeries],
@@ -666,12 +799,43 @@ export function CompositeChart({
     previousInitialViewportRef.current,
     initialViewport,
   );
-  const currentInteractionViewport = navigationBoundsChanged || initialViewportChanged ? null : interactionViewport;
+  const interactionViewportStillValid = !!interactionViewport
+    && !!navigationBounds
+    && sameCompositeViewport(
+      clampCompositeViewport(interactionViewport, navigationBounds),
+      interactionViewport,
+    );
+  const shouldResetInteractionViewport = initialViewportChanged
+    || (navigationBoundsChanged && !interactionViewportStillValid);
+  const currentInteractionViewport = shouldResetInteractionViewport ? null : interactionViewport;
   const effectiveViewport = navigationBounds
     ? currentInteractionViewport
       ? clampCompositeViewport(currentInteractionViewport, navigationBounds)
       : initialViewport
     : null;
+  const effectiveViewportStart = effectiveViewport?.start.getTime() ?? null;
+  const effectiveViewportEnd = effectiveViewport?.end.getTime() ?? null;
+  const viewportSeriesKey = visibleLegendSeries
+    .map((entry) => `${entry.id}:${entry.label}`)
+    .join("|");
+  const lastReportedViewportRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!onViewportChange) return;
+    const viewportKey = effectiveViewportStart === null || effectiveViewportEnd === null
+      ? "none"
+      : `${effectiveViewportStart}:${effectiveViewportEnd}`;
+    const key = `${viewportSeriesKey}|${viewportKey}`;
+    if (lastReportedViewportRef.current === key) return;
+    lastReportedViewportRef.current = key;
+    onViewportChange(
+      effectiveViewportStart === null || effectiveViewportEnd === null
+        ? null
+        : {
+            start: new Date(effectiveViewportStart),
+            end: new Date(effectiveViewportEnd),
+          },
+    );
+  }, [effectiveViewportEnd, effectiveViewportStart, onViewportChange, viewportSeriesKey]);
   const minimumViewportSpanMs = useMemo(
     () => navigationBounds ? resolveCompositeMinimumSpanMs(visibleSeries, navigationBounds) : 1,
     [navigationBounds, visibleSeries],
@@ -683,12 +847,20 @@ export function CompositeChart({
     previousNavigationBoundsRef.current = navigationBounds;
     previousInitialViewportRef.current = initialViewport;
     if (
-      shouldResetCompositeViewport(previousBounds, navigationBounds)
-      || shouldResetCompositeViewport(previousInitial, initialViewport)
+      shouldResetCompositeViewport(previousInitial, initialViewport)
+      || (
+        shouldResetCompositeViewport(previousBounds, navigationBounds)
+        && interactionViewport
+        && navigationBounds
+        && !sameCompositeViewport(
+          clampCompositeViewport(interactionViewport, navigationBounds),
+          interactionViewport,
+        )
+      )
     ) {
       setInteractionViewport(null);
     }
-  }, [initialViewport, navigationBounds]);
+  }, [initialViewport, interactionViewport, navigationBounds]);
 
   const zoomViewport = useCallback((zoomFactor: number, anchorRatio = 1) => {
     if (!navigationBounds || !initialViewport) return;
@@ -745,7 +917,8 @@ export function CompositeChart({
     width: 1,
     height: Math.max(panelCount, 1),
     viewport: effectiveViewport ?? undefined,
-  }), [effectiveViewport, panelCount, panels, visibleSeries]);
+    timelineSeries: visibleLegendSeries,
+  }), [effectiveViewport, panelCount, panels, visibleLegendSeries, visibleSeries]);
   const layoutPanels = useMemo<CompositePanelScene[] | null>(() => {
     if (!projectedScene) return null;
     const panelSpecById = new Map(panels.map((panel) => [panel.id, panel] as const));
@@ -802,6 +975,33 @@ export function CompositeChart({
 
   useShortcut((event) => {
     if (!focused || !interactive) return;
+    if (isPlainKey(event, "[", "]") && visibleLegendSeries.length > 0) {
+      event.preventDefault();
+      event.stopPropagation();
+      const direction = event.name === "[" ? -1 : 1;
+      setLegendKeyboardIndex((current) => (
+        current === null
+          ? direction > 0 ? 0 : visibleLegendSeries.length - 1
+          : (current + direction + visibleLegendSeries.length) % visibleLegendSeries.length
+      ));
+      onActivate?.();
+      return;
+    }
+    if (isPlainKey(event, "space") && legendKeyboardIndex !== null) {
+      const entry = visibleLegendSeries[legendKeyboardIndex];
+      if (!entry || !onToggleSeries || !(isSeriesToggleable?.(entry) ?? true)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onActivate?.();
+      onToggleSeries(entry.id);
+      return;
+    }
+    if (isPlainKey(event, "escape") && legendKeyboardIndex !== null && !scene?.cursorDate) {
+      event.preventDefault();
+      event.stopPropagation();
+      setLegendKeyboardIndex(null);
+      return;
+    }
     const interaction = resolveCompositeChartInteraction(event);
     if (!interaction) return;
     if (
@@ -856,6 +1056,7 @@ export function CompositeChart({
           <CompositeLegend
             scene={null}
             series={[]}
+            visibleSeriesIds={new Set()}
             width={totalWidth}
             accessory={legendAccessory}
             accessoryWidth={legendAccessoryWidth}
@@ -863,6 +1064,7 @@ export function CompositeChart({
             onActivate={onActivate}
             onToggleSeries={onToggleSeries}
             isSeriesToggleable={isSeriesToggleable}
+            keyboardIndex={legendKeyboardIndex}
           />
         ) : null}
         {totalHeight > legendRows ? (
@@ -896,6 +1098,7 @@ export function CompositeChart({
         <CompositeLegend
           scene={scene}
           series={visibleLegendSeries}
+          visibleSeriesIds={visibleSeriesIds}
           width={totalWidth}
           accessory={legendAccessory}
           accessoryWidth={legendAccessoryWidth}
@@ -903,6 +1106,7 @@ export function CompositeChart({
           onActivate={onActivate}
           onToggleSeries={onToggleSeries}
           isSeriesToggleable={isSeriesToggleable}
+          keyboardIndex={legendKeyboardIndex}
         />
       ) : null}
       {scene.panels.map((panel) => (

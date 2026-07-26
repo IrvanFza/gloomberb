@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChartResolveCache,
   resolveChartSpecData,
+  type ChartResolveOptions,
   type ChartResolveSources,
 } from "./resolve";
 import type { ChartResolutionResult, ChartSpec } from "./types";
@@ -18,6 +19,8 @@ export interface UseChartResolutionResult extends ChartResolutionResult {
 
 export interface UseChartResolutionOptions {
   liveRefreshIntervalMs?: number;
+  autoViewport?: ChartResolveOptions["autoViewport"];
+  targetPointCount?: number;
 }
 
 const EMPTY_RESULT: ChartResolutionResult = {
@@ -51,20 +54,47 @@ export function useChartResolution(
   const liveSubscriptionGenerationRef = useRef(0);
   const liveQuoteOverridesRef = useRef<ReadonlyMap<string, Quote>>(new Map());
   const resolveCacheRef = useRef(new ChartResolveCache());
-  const latestRequestRef = useRef({ spec, sources });
-  latestRequestRef.current = { spec, sources };
+  const cacheIdentityRef = useRef<{
+    spec: ChartSpec | null;
+    sources: ChartResolveSources | null;
+    revision: number;
+  }>({ spec: null, sources: null, revision: -1 });
+  const autoViewportStart = options.autoViewport?.start.getTime();
+  const autoViewportEnd = options.autoViewport?.end.getTime();
+  const validAutoViewport = typeof autoViewportStart === "number"
+      && Number.isFinite(autoViewportStart)
+      && typeof autoViewportEnd === "number"
+      && Number.isFinite(autoViewportEnd)
+      && autoViewportStart <= autoViewportEnd
+    ? { start: new Date(autoViewportStart), end: new Date(autoViewportEnd) }
+    : null;
+  const adaptiveTargetPointCount = validAutoViewport ? options.targetPointCount : undefined;
+  const resolveOptions: ChartResolveOptions = {
+    autoViewport: validAutoViewport,
+    targetPointCount: adaptiveTargetPointCount,
+  };
+  const latestRequestRef = useRef({ spec, sources, options: resolveOptions });
+  latestRequestRef.current = { spec, sources, options: resolveOptions };
   const reload = useCallback(() => setRevision((current) => current + 1), []);
 
   useEffect(() => {
     generationRef.current += 1;
     const generation = generationRef.current;
-    const cache = new ChartResolveCache();
-    resolveCacheRef.current = cache;
+    const cacheIdentity = cacheIdentityRef.current;
+    const resetCache = cacheIdentity.spec !== spec
+      || cacheIdentity.sources !== sources
+      || cacheIdentity.revision !== revision;
+    if (resetCache) {
+      resolveCacheRef.current = new ChartResolveCache();
+      cacheIdentityRef.current = { spec, sources, revision };
+    }
+    const cache = resolveCacheRef.current;
     setResult((current) => ({ ...current, loading: true, errors: [] }));
     resolveChartSpecData(
       spec,
       withQuoteOverrides(sources, liveQuoteOverridesRef.current),
       cache,
+      resolveOptions,
     )
       .then((next) => {
         if (generationRef.current === generation) setResult(next);
@@ -81,7 +111,7 @@ export function useChartResolution(
     return () => {
       if (generationRef.current === generation) generationRef.current += 1;
     };
-  }, [revision, sources, spec]);
+  }, [adaptiveTargetPointCount, autoViewportEnd, autoViewportStart, revision, sources, spec]);
 
   const liveTargetSignature = liveChartQuoteTargetSignature(spec);
   const liveRefreshIntervalMs = options.liveRefreshIntervalMs ?? LIVE_CHART_REFRESH_INTERVAL_MS;
@@ -102,6 +132,7 @@ export function useChartResolution(
             request.spec,
             withQuoteOverrides(request.sources, quoteOverrides),
             resolveCacheRef.current,
+            request.options,
           );
           if (
             liveSubscriptionGenerationRef.current === subscriptionGeneration

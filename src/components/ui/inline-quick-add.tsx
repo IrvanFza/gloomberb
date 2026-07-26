@@ -31,7 +31,7 @@ export function InlineQuickAddRow({
   placeholder,
   inputRef,
   preview,
-  minInputWidth = 6,
+  minInputWidth,
   maxInputWidth = 18,
   onFocusRequest,
   onChange,
@@ -43,9 +43,10 @@ export function InlineQuickAddRow({
   const inputWidth = useMemo(() => {
     const queryWidth = [...value.trim()].length;
     if (queryWidth > 0) {
-      return Math.max(4, Math.min(maxInputWidth, queryWidth + 1));
+      // A typed query hugs its preview unless the caller asked for a wider field.
+      return Math.max(minInputWidth ?? 4, Math.min(maxInputWidth, queryWidth + 1));
     }
-    return Math.max(minInputWidth, Math.min(10, Math.floor(width * 0.18)));
+    return Math.max(minInputWidth ?? 6, Math.min(10, Math.floor(width * 0.18)));
   }, [maxInputWidth, minInputWidth, value, width]);
   const hasPreview = preview !== undefined && preview !== null;
   const previewWidth = Math.max(4, width - inputWidth - 5);

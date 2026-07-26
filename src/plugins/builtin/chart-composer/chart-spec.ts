@@ -1,4 +1,4 @@
-import type { ChartSpec } from "../../../time-series/types";
+import type { ChartSpec, ResolvedSeries } from "../../../time-series/types";
 import { CHART_SPEC_VERSION } from "../../../time-series/types";
 import {
   DEFAULT_CHART_SPEC,
@@ -9,6 +9,47 @@ import {
 
 export const CHART_SPEC_SETTING_KEY = "chartSpec";
 export const MAX_CHART_COMPOSER_SERIES = MAX_CHART_SERIES;
+
+export function canToggleChartSeries(spec: ChartSpec, seriesId: string): boolean {
+  const target = spec.series.find((series) => series.id === seriesId);
+  if (!target) return false;
+  if (target.visible === false) return true;
+  return spec.series.filter((series) => series.visible !== false).length > 1;
+}
+
+export function toggleChartSeries(spec: ChartSpec, seriesId: string): ChartSpec {
+  if (!canToggleChartSeries(spec, seriesId)) return spec;
+  return {
+    ...spec,
+    series: spec.series.map((series) => series.id === seriesId
+      ? { ...series, visible: series.visible === false }
+      : series),
+  };
+}
+
+/**
+ * Project the latest resolved data through the authored visibility immediately.
+ * Resolution continues in the background, but hiding/restoring a loaded base
+ * series should not wait for another provider round trip.
+ */
+export function projectVisibleChartSeries(
+  spec: ChartSpec,
+  resolvedSeries: readonly ResolvedSeries[],
+  legendSeries: readonly ResolvedSeries[] = [],
+): ResolvedSeries[] {
+  const baseIds = new Set(spec.series.map((series) => series.id));
+  const resolvedById = new Map([
+    ...legendSeries.map((series) => [series.id, series] as const),
+    ...resolvedSeries.map((series) => [series.id, series] as const),
+  ]);
+  return [
+    ...spec.series.flatMap((series) => {
+      const resolved = series.visible === false ? undefined : resolvedById.get(series.id);
+      return resolved ? [resolved] : [];
+    }),
+    ...resolvedSeries.filter((series) => !baseIds.has(series.id)),
+  ];
+}
 
 function decodeSpec(value: unknown): unknown {
   if (typeof value !== "string") return value;

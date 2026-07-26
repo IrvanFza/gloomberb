@@ -42,7 +42,7 @@ export const EMPTY_FOOTER: CombinedPaneFooter = { info: [], hints: [] };
 
 export function hasPaneFooterContent(footer?: CombinedPaneFooter | null): boolean {
   if (!footer) return false;
-  return footer.info.length > 0 || footer.hints.length > 0;
+  return footer.info.length > 0 || footer.hints.some((hint) => !hint.disabled);
 }
 
 export function combinePaneFooterRegistrations(registrations: Map<string, PaneFooterRegistration>): CombinedPaneFooter {

@@ -1,10 +1,11 @@
-import { memo, useMemo, type RefObject } from "react";
+import { memo, useLayoutEffect, useMemo, useRef, type RefObject } from "react";
 import {
   Box,
   Input,
   ScrollBox,
   Text,
   TextAttributes,
+  type InputRenderable,
   type ScrollBoxRenderable,
 } from "../../../ui";
 import { Spinner } from "../../ui";
@@ -54,6 +55,15 @@ export const CommandBarListHeader = memo(function CommandBarListHeader({
   rootShortcutFeedback,
   onQueryChange,
 }: CommandBarListHeaderProps) {
+  const inputRef = useRef<InputRenderable | null>(null);
+
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input || input.editBuffer.getText() === query) return;
+    input.editBuffer.setText?.(query);
+    input.setCursorOffset?.(query.length);
+  }, [kind, query, title]);
+
   return (
     <>
       <Box height={1} paddingX={contentPadding}>
@@ -67,9 +77,10 @@ export const CommandBarListHeader = memo(function CommandBarListHeader({
           }}
         >
           <Input
+            key={`${kind}:${title}`}
+            ref={inputRef}
             value={query}
             onInput={onQueryChange}
-            onChange={onQueryChange}
             placeholder={kind === "root" ? t("Search commands") : title === "Security Description" ? t("Search tickers") : t("Filter")}
             focused
             data-gloom-remote-scope="command-bar"

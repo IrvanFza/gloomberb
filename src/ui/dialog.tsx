@@ -18,6 +18,8 @@ export interface DialogApi {
 interface DialogContextValue {
   dialog: DialogApi;
   isOpen: boolean;
+  dialogId?: string;
+  keyboardEnabled: boolean;
 }
 
 const DialogContext = createContext<DialogContextValue | null>(null);
@@ -25,14 +27,18 @@ const DialogContext = createContext<DialogContextValue | null>(null);
 export function DialogHostProvider({
   dialog,
   isOpen,
+  dialogId,
+  keyboardEnabled = true,
   children,
 }: {
   dialog: DialogApi;
   isOpen: boolean;
+  dialogId?: string;
+  keyboardEnabled?: boolean;
   children: ReactNode;
 }) {
   return (
-    <DialogContext value={{ dialog, isOpen }}>
+    <DialogContext value={{ dialog, isOpen, dialogId, keyboardEnabled }}>
       {children}
     </DialogContext>
   );
@@ -54,5 +60,11 @@ export function useDialogKeyboard(
   handler: (event: KeyEventLike) => void,
   options?: ShortcutOptions | string,
 ): void {
-  useShortcut(handler, typeof options === "string" ? { scope: options } : options);
+  const context = useContext(DialogContext);
+  const resolved = typeof options === "string" ? { scope: options } : options;
+  useShortcut(handler, {
+    ...resolved,
+    enabled: (resolved?.enabled ?? true) && (context?.keyboardEnabled ?? true),
+    scope: resolved?.scope ?? context?.dialogId,
+  });
 }

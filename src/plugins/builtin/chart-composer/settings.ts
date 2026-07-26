@@ -18,6 +18,7 @@ import {
   buildCustomChartPreset,
   buildEmptyChartPreset,
   buildPriceChartPreset,
+  chartSeriesLabel,
   formatSeriesExpression,
   getCompatibleSeriesStyles,
   getSelectedBuiltinStudies,
@@ -81,12 +82,23 @@ function sourceKey(series: ChartSeriesSpec): string {
   return formatSeriesExpression(series).toLowerCase();
 }
 
-export function getChartPrimaryStyles(spec: ChartSpec): SeriesStyle[] {
-  const primary = spec.series[0];
-  if (!primary) return [];
-  const fieldId = primary.source.kind === "security" ? primary.source.fieldId : "";
-  const anotherOhlcSeriesSharesPanel = spec.series.slice(1).some((series) => (
-    series.panelId === primary.panelId && isOhlcSeriesStyle(series.style)
+/**
+ * The compact style picker is intentionally scoped to a chart with exactly one
+ * authored series. Multi-series styling belongs in the Series editor where the
+ * target is explicit, even when all but one series are currently hidden.
+ */
+export function getChartInlineStyleTarget(spec: ChartSpec): ChartSeriesSpec | null {
+  return spec.series.length === 1 ? spec.series[0] ?? null : null;
+}
+
+export function getChartInlineStyles(spec: ChartSpec): SeriesStyle[] {
+  const target = getChartInlineStyleTarget(spec);
+  if (!target) return [];
+  const fieldId = target.source.kind === "security" ? target.source.fieldId : "";
+  const anotherOhlcSeriesSharesPanel = spec.series.some((series) => (
+    series.id !== target.id
+    && series.panelId === target.panelId
+    && isOhlcSeriesStyle(series.style)
   ));
   return getCompatibleSeriesStyles(fieldId).filter((style) => (
     !anotherOhlcSeriesSharesPanel || !isOhlcSeriesStyle(style)
@@ -280,18 +292,21 @@ export function applyChartComposerPaneSetting(
       break;
     }
     case CHART_SETTING_KEYS.mode: {
-      const primary = spec.series[0];
+      const target = getChartInlineStyleTarget(spec);
       const mode = requireString(value, "Mode") as SeriesStyle;
-      if (!primary) throw new Error("Add a series before choosing a chart mode.");
-      if (!getChartPrimaryStyles(spec).includes(mode)) {
-        throw new Error("That chart mode is not compatible with the primary series.");
+      if (!target) {
+        throw new Error(spec.series.length === 0
+          ? "Add a series before choosing a chart style."
+          : "Use the Series editor to style a multi-series chart.");
+      }
+      if (!getChartInlineStyles(spec).includes(mode)) {
+        throw new Error(`That chart style is not compatible with ${chartSeriesLabel(target)}.`);
       }
       nextSpec = {
         ...spec,
-        series: [
-          applySeriesStyle(primary, mode),
-          ...spec.series.slice(1),
-        ],
+        series: spec.series.map((series) => (
+          series.id === target.id ? applySeriesStyle(series, mode) : series
+        )),
       };
       break;
     }
@@ -307,8 +322,8 @@ export function buildChartComposerPaneSettingsDef(
   activeTicker?: string | null,
 ): PaneSettingsDef {
   const spec = parseChartSpecOr(settings[CHART_SPEC_SETTING_KEY], fallbackSpec(activeTicker));
-  const primary = spec.series[0];
-  const modes = getChartPrimaryStyles(spec);
+  const inlineStyleTarget = getChartInlineStyleTarget(spec);
+  const modes = getChartInlineStyles(spec);
 
   return {
     title: "Chart Settings",
@@ -319,7 +334,7 @@ export function buildChartComposerPaneSettingsDef(
       [CHART_SETTING_KEYS.dateWindow]: formatDateWindow(spec),
       [CHART_SETTING_KEYS.range]: spec.viewport.range,
       [CHART_SETTING_KEYS.resolution]: spec.viewport.resolution,
-      [CHART_SETTING_KEYS.mode]: primary?.style ?? "",
+      [CHART_SETTING_KEYS.mode]: inlineStyleTarget?.style ?? "",
     },
     fields: [
       {
@@ -339,7 +354,7 @@ export function buildChartComposerPaneSettingsDef(
       {
         key: CHART_SETTING_KEYS.formulas,
         label: "Formulas",
-        description: "Compare the first two visible series with a derived formula.",
+        description: "Compare two chart series with a derived formula.",
         type: "multi-select",
         options: CHART_FORMULA_OPTIONS,
       },
@@ -367,11 +382,11 @@ export function buildChartComposerPaneSettingsDef(
           label: resolution.toUpperCase(),
         })),
       },
-      ...(primary
+      ...(inlineStyleTarget
         ? [{
           key: CHART_SETTING_KEYS.mode,
-          label: "Mode",
-          description: "Choose how the primary series is drawn.",
+          label: `Style (${chartSeriesLabel(inlineStyleTarget)})`,
+          description: `Choose how ${chartSeriesLabel(inlineStyleTarget)} is drawn.`,
           type: "select" as const,
           options: modes.map((mode) => ({ value: mode, label: mode.toUpperCase() })),
         }]

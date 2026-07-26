@@ -1,8 +1,18 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text, type InputRenderable } from "../../../ui";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Box,
+  Text,
+  useNativeRenderer,
+  useUiHost,
+  type BoxRenderable,
+  type InputRenderable,
+} from "../../../ui";
 import { InlineQuickAddRow, ListView, type ListViewItem } from "../../../components/ui";
+import { getNativeSurfaceManager } from "../../../components/chart/native/surface/manager";
+import { getRenderableCellRect } from "../../../components/chart/native/surface/visibility";
 import { useShortcut } from "../../../react/input";
 import { useAppInputCapture } from "../../../state/app/input-capture";
+import { useOptionalPaneInstanceId } from "../../../state/app/context";
 import { colors } from "../../../theme/colors";
 import type { ChartSpec } from "../../../time-series/types";
 import { getSharedRegistry } from "../../registry";
@@ -17,6 +27,23 @@ const MINIMUM_CHART_HEIGHT = 4;
 const QUICK_ADD_ROW_HEIGHT = 1;
 const IDLE_QUICK_ADD_WIDTH = 14;
 const ACTIVE_QUICK_ADD_WIDTH = 36;
+
+interface ClosestElementLike {
+  closest(selector: string): {
+    getAttribute(name: string): string | null;
+  } | null;
+}
+
+export function isChartQuickAddMouseTarget(target: unknown, quickAddId: string): boolean {
+  if (!target || typeof target !== "object") return false;
+  const candidate = target as Partial<ClosestElementLike> & {
+    parentElement?: Partial<ClosestElementLike> | null;
+  };
+  const element = typeof candidate.closest === "function" ? candidate : candidate.parentElement;
+  if (!element || typeof element.closest !== "function") return false;
+  const root = element.closest("[data-gloom-chart-quick-add]");
+  return root?.getAttribute("data-gloom-chart-quick-add") === quickAddId;
+}
 
 function clampSelection(index: number, length: number): number {
   if (length <= 0) return -1;
@@ -65,10 +92,16 @@ export function ChartSeriesQuickAdd({
   onActiveChange?: (active: boolean) => void;
   onWidthChange?: (width: number) => void;
 }) {
+  const ui = useUiHost();
+  const nativeRenderer = useNativeRenderer();
+  const paneId = useOptionalPaneInstanceId();
+  const quickAddId = useId();
   const inputRef = useRef<InputRenderable | null>(null);
+  const drawerRef = useRef<BoxRenderable | null>(null);
   const commitLockRef = useRef(false);
   const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [active, setActive] = useState(false);
+  const [inputFocused, setInputFocused] = useState(false);
   const [query, setQuery] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -97,11 +130,56 @@ export function ChartSeriesQuickAdd({
   const drawerHeight = active
     ? Math.min(maximumDrawerHeight, drawerStatus ? 1 : suggestions.length)
     : 0;
-  useAppInputCapture(active && focused);
+  const nativeSurfaceManager = useMemo(
+    () => getNativeSurfaceManager(nativeRenderer),
+    [nativeRenderer],
+  );
+  useAppInputCapture(inputFocused && focused);
 
   useEffect(() => {
-    onActiveChange?.(active && focused);
-  }, [active, focused, onActiveChange]);
+    const occluderId = `${quickAddId}:drawer`;
+    if (ui.kind === "desktop-web" || drawerHeight <= 0 || !paneId || !drawerRef.current) {
+      nativeSurfaceManager.removeLocalOccluder(occluderId);
+      return;
+    }
+
+    const drawer = drawerRef.current as BoxRenderable & { onLifecyclePass?: (() => void) | null };
+    const previousLifecyclePass = drawer.onLifecyclePass;
+    const syncOccluder = () => {
+      if (
+        typeof drawer.x !== "number"
+        || typeof drawer.y !== "number"
+        || typeof drawer.width !== "number"
+        || typeof drawer.height !== "number"
+      ) {
+        return;
+      }
+      nativeSurfaceManager.upsertLocalOccluder({
+        id: occluderId,
+        paneId,
+        rect: getRenderableCellRect(drawer as Parameters<typeof getRenderableCellRect>[0]),
+      });
+    };
+    const lifecyclePass = () => {
+      previousLifecyclePass?.();
+      syncOccluder();
+    };
+    drawer.onLifecyclePass = lifecyclePass;
+    nativeRenderer.registerLifecyclePass(drawer);
+    syncOccluder();
+    const mountTimer = setTimeout(syncOccluder, 0);
+
+    return () => {
+      clearTimeout(mountTimer);
+      nativeRenderer.unregisterLifecyclePass(drawer);
+      if (drawer.onLifecyclePass === lifecyclePass) drawer.onLifecyclePass = previousLifecyclePass;
+      nativeSurfaceManager.removeLocalOccluder(occluderId);
+    };
+  }, [drawerHeight, nativeRenderer, nativeSurfaceManager, paneId, quickAddId, ui.kind]);
+
+  useEffect(() => {
+    onActiveChange?.(inputFocused && focused);
+  }, [focused, inputFocused, onActiveChange]);
 
   useEffect(() => {
     onWidthChange?.(controlWidth);
@@ -114,8 +192,21 @@ export function ChartSeriesQuickAdd({
   useEffect(() => {
     if (focused || !active) return;
     setActive(false);
+    setInputFocused(false);
     inputRef.current?.blur?.();
   }, [active, focused]);
+
+  useEffect(() => {
+    if (ui.kind !== "desktop-web" || !inputFocused) return;
+
+    const handleOutsideMouseDown = (event: globalThis.MouseEvent) => {
+      if (isChartQuickAddMouseTarget(event.target, quickAddId)) return;
+      inputRef.current?.blur?.();
+    };
+
+    document.addEventListener("mousedown", handleOutsideMouseDown, true);
+    return () => document.removeEventListener("mousedown", handleOutsideMouseDown, true);
+  }, [inputFocused, quickAddId, ui.kind]);
 
   const cancelPendingBlur = useCallback(() => {
     if (blurTimerRef.current === null) return;
@@ -135,9 +226,11 @@ export function ChartSeriesQuickAdd({
     cancelPendingBlur();
     onActivatePane();
     setActive(true);
+    setInputFocused(true);
+    onActiveChange?.(true);
     setError(null);
     queueMicrotask(() => inputRef.current?.focus?.());
-  }, [cancelPendingBlur, onActivatePane]);
+  }, [cancelPendingBlur, onActivatePane, onActiveChange]);
 
   const commitSuggestion = useCallback((suggestion: SeriesCatalogSuggestion | undefined) => {
     if (!suggestion || commitLockRef.current) return;
@@ -155,8 +248,10 @@ export function ChartSeriesQuickAdd({
     setSelectedIndex(0);
     setError(null);
     setActive(false);
+    setInputFocused(false);
+    onActiveChange?.(false);
     queueMicrotask(() => inputRef.current?.blur?.());
-  }, [cancelPendingBlur, clearInput, setSpec, spec]);
+  }, [cancelPendingBlur, clearInput, onActiveChange, setSpec, spec]);
 
   const submit = useCallback(() => {
     commitSuggestion(suggestions[clampSelection(selectedIndex, suggestions.length)]);
@@ -166,8 +261,10 @@ export function ChartSeriesQuickAdd({
     inputRef.current?.blur?.();
     clearInput();
     setActive(false);
+    setInputFocused(false);
+    onActiveChange?.(false);
     setError(null);
-  }, [cancelPendingBlur, clearInput]);
+  }, [cancelPendingBlur, clearInput, onActiveChange]);
 
   useShortcut((event) => {
     if (!focused) return;
@@ -221,10 +318,12 @@ export function ChartSeriesQuickAdd({
       overflow="visible"
       backgroundColor={colors.panel}
       zIndex={30}
+      data-gloom-role="chart-series-quick-add"
+      data-gloom-chart-quick-add={quickAddId}
     >
       <InlineQuickAddRow
         value={query}
-        active={active}
+        active={inputFocused}
         paneFocused={focused}
         width={controlWidth}
         rowWidth={controlWidth}
@@ -237,10 +336,16 @@ export function ChartSeriesQuickAdd({
           setQuery(value);
           setError(null);
           if (!active) setActive(true);
+          if (!inputFocused) setInputFocused(true);
         }}
         onSubmit={submit}
-        onFocus={cancelPendingBlur}
+        onFocus={() => {
+          cancelPendingBlur();
+          setInputFocused(true);
+        }}
         onBlur={() => {
+          setInputFocused(false);
+          onActiveChange?.(false);
           cancelPendingBlur();
           blurTimerRef.current = setTimeout(() => {
             blurTimerRef.current = null;
@@ -254,6 +359,7 @@ export function ChartSeriesQuickAdd({
       />
       {drawerHeight > 0 ? (
         <Box
+          ref={drawerRef}
           position="absolute"
           left={0}
           top={1}

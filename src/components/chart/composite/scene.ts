@@ -4,6 +4,7 @@ import type {
   ResolvedSeries,
   TimeSeriesPoint,
 } from "../../../time-series/types";
+import { effectiveTimeSeriesPointTime } from "../../../time-series/alignment";
 import type {
   BuildCompositeChartSceneOptions,
   CompositeAxisDomain,
@@ -13,6 +14,12 @@ import type {
   CompositePanelScene,
   CompositeProjectedPoint,
 } from "./types";
+import {
+  buildCompositeTimeScale,
+  projectCompositeTimestamp,
+  unprojectCompositeTimestamp,
+} from "./time-scale";
+import type { CompositeTimeScale } from "./types";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -31,29 +38,50 @@ function pointTime(point: TimeSeriesPoint): number | null {
   return Number.isFinite(time) ? time : null;
 }
 
-function normalizedPoints(series: ResolvedSeries): Array<{ point: TimeSeriesPoint; timestamp: number; value: number }> {
-  const byTimestamp = new Map<number, { point: TimeSeriesPoint; timestamp: number; value: number }>();
-  for (const point of series.points) {
-    const timestamp = pointTime(point);
-    const value = resolveTimeSeriesPointValue(point);
-    if (timestamp === null || value === null) continue;
-    byTimestamp.set(timestamp, { point, timestamp, value });
-  }
-  return [...byTimestamp.values()].sort((left, right) => left.timestamp - right.timestamp);
+function pointTimestampForScale(
+  series: ResolvedSeries,
+  point: TimeSeriesPoint,
+  timeScale?: CompositeTimeScale,
+): number | null {
+  const timestamp = pointTime(point);
+  if (timestamp === null) return null;
+  return timeScale?.kind === "market" && !series.timeBasis
+    ? effectiveTimeSeriesPointTime(point)
+    : timestamp;
 }
 
-function normalizedSourcePoints(series: ResolvedSeries): Array<{
+function normalizedSourcePoints(series: ResolvedSeries, timeScale?: CompositeTimeScale): Array<{
   point: TimeSeriesPoint;
   timestamp: number;
   value: number | null;
 }> {
-  const byTimestamp = new Map<number, { point: TimeSeriesPoint; timestamp: number; value: number | null }>();
+  const bySourceTimestamp = new Map<number, { point: TimeSeriesPoint; timestamp: number; value: number | null }>();
   for (const point of series.points) {
-    const timestamp = pointTime(point);
-    if (timestamp === null) continue;
-    byTimestamp.set(timestamp, { point, timestamp, value: resolveTimeSeriesPointValue(point) });
+    const sourceTimestamp = pointTime(point);
+    const timestamp = pointTimestampForScale(series, point, timeScale);
+    if (sourceTimestamp === null || timestamp === null || !Number.isFinite(timestamp)) continue;
+    bySourceTimestamp.set(sourceTimestamp, {
+      point,
+      timestamp,
+      value: resolveTimeSeriesPointValue(point),
+    });
   }
-  return [...byTimestamp.values()].sort((left, right) => left.timestamp - right.timestamp);
+  return [...bySourceTimestamp.values()].sort((left, right) => (
+    left.timestamp - right.timestamp
+    || left.point.date.getTime() - right.point.date.getTime()
+  ));
+}
+
+function normalizedPoints(series: ResolvedSeries): Array<{
+  point: TimeSeriesPoint;
+  timestamp: number;
+  value: number;
+}> {
+  return normalizedSourcePoints(series).flatMap((entry) => (
+    entry.value === null
+      ? []
+      : [{ ...entry, value: entry.value }]
+  ));
 }
 
 function explicitViewport(
@@ -70,12 +98,20 @@ function scopeSeriesToViewport(
   series: ResolvedSeries,
   startTime: number,
   endTime: number,
+  timeScale: CompositeTimeScale,
 ): ResolvedSeries | null {
-  const points = normalizedSourcePoints(series);
-  const visible = points.filter(({ timestamp }) => timestamp >= startTime && timestamp <= endTime);
+  const points = normalizedSourcePoints(series, timeScale);
+  const placement = timeScale.kind === "market" && !series.timeBasis
+    ? "next-market-slot" as const
+    : "timestamp" as const;
+  const visible = points.filter(({ timestamp }) => {
+    if (timestamp >= startTime && timestamp <= endTime) return true;
+    const projected = projectCompositeTimestamp(timeScale, timestamp, placement);
+    return !!projected && projected.ratio >= 0 && projected.ratio <= 1;
+  });
   if (series.interpolation === "step-after" || series.style === "step") {
     const anchor = [...points].reverse().find(({ timestamp, value }) => timestamp < startTime && value !== null);
-    if (anchor) visible.unshift(anchor);
+    if (anchor && !visible.includes(anchor)) visible.unshift(anchor);
   }
   return visible.some(({ value }) => value !== null)
     ? { ...series, points: visible.map(({ point }) => point) }
@@ -106,16 +142,30 @@ export function allocateCompositePanelHeights(
     finiteNumber(panel.height) && panel.height > 0 ? panel.height : 1
   ));
   const totalWeight = weights.reduce((sum, weight) => sum + weight, 0) || panels.length;
-  const allocations = weights.map((weight) => Math.max(1, Math.floor((weight / totalWeight) * totalHeight)));
+  const quotas = weights.map((weight) => (weight / totalWeight) * totalHeight);
+  const allocations = quotas.map((quota) => Math.max(1, Math.floor(quota)));
   let allocated = allocations.reduce((sum, value) => sum + value, 0);
 
   while (allocated < totalHeight) {
-    const index = allocated % allocations.length;
+    let index = 0;
+    for (let candidate = 1; candidate < allocations.length; candidate += 1) {
+      if (quotas[candidate]! - allocations[candidate]!
+        > quotas[index]! - allocations[index]!) {
+        index = candidate;
+      }
+    }
     allocations[index] = (allocations[index] ?? 0) + 1;
     allocated += 1;
   }
   while (allocated > totalHeight) {
-    const index = allocations.findLastIndex((value) => value > 1);
+    let index = -1;
+    for (let candidate = 0; candidate < allocations.length; candidate += 1) {
+      if (allocations[candidate]! <= 1) continue;
+      if (index < 0 || allocations[candidate]! - quotas[candidate]!
+        > allocations[index]! - quotas[index]!) {
+        index = candidate;
+      }
+    }
     if (index < 0) break;
     allocations[index] = allocations[index]! - 1;
     allocated -= 1;
@@ -229,11 +279,15 @@ function projectSeries(
   domain: CompositeAxisDomain,
   startTime: number,
   endTime: number,
+  timeScale: CompositeTimeScale,
 ): CompositeProjectedPoint[] {
-  const span = Math.max(endTime - startTime, 1);
   const projected: CompositeProjectedPoint[] = [];
   let breakBefore = true;
-  for (const { point, timestamp, value } of normalizedSourcePoints(series)) {
+  const placement = timeScale.kind === "market" && !series.timeBasis
+    ? "next-market-slot" as const
+    : "timestamp" as const;
+  const stepSeries = series.interpolation === "step-after" || series.style === "step";
+  for (const { point, timestamp, value } of normalizedSourcePoints(series, timeScale)) {
     if (value === null) {
       breakBefore = true;
       continue;
@@ -243,23 +297,28 @@ function projectSeries(
       breakBefore = true;
       continue;
     }
+    const projectedTime = projectCompositeTimestamp(timeScale, timestamp, placement);
+    if (!projectedTime) continue;
+    const beforeViewportStepAnchor = stepSeries
+      && timestamp < startTime
+      && projectedTime.ratio < 0;
+    if (!beforeViewportStepAnchor && (projectedTime.ratio < 0 || projectedTime.ratio > 1)) {
+      continue;
+    }
     projected.push({
       point,
-      timestamp,
+      timestamp: beforeViewportStepAnchor ? startTime : timestamp,
       value,
-      xRatio: (timestamp - startTime) / span,
+      xRatio: beforeViewportStepAnchor ? 0 : projectedTime.ratio,
+      xSlot: beforeViewportStepAnchor ? undefined : projectedTime.xSlot,
       yRatio,
       breakBefore,
     });
     breakBefore = false;
   }
-  if ((series.interpolation === "step-after" || series.style === "step") && projected.length > 0) {
-    const first = projected[0]!;
-    if (first.timestamp < startTime) {
-      projected[0] = { ...first, timestamp: startTime, xRatio: 0, breakBefore: true };
-    }
+  if (stepSeries && projected.length > 0) {
     const last = projected.at(-1)!;
-    const trailingGap = normalizedSourcePoints(series).some(({ timestamp, value }) => (
+    const trailingGap = normalizedSourcePoints(series, timeScale).some(({ timestamp, value }) => (
       timestamp > last.timestamp && timestamp <= endTime
       && (value === null || projectCompositeValue(value, domain) === null)
     ));
@@ -338,7 +397,7 @@ export function applyCompositeChartCursor(
   if (currentTimestamp === nextTimestamp) return scene;
 
   const cursorXRatio = cursorDate
-    ? (cursorDate.getTime() - scene.startTime) / Math.max(scene.endTime - scene.startTime, 1)
+    ? projectCompositeTimestamp(scene.timeScale, cursorDate.getTime())?.ratio ?? null
     : null;
   return {
     ...scene,
@@ -364,21 +423,35 @@ export function buildCompositeChartScene(
   const viewport = explicitViewport(options);
   const startTime = viewport?.startTime ?? (firstTime === lastTime ? firstTime - DAY_MS / 2 : firstTime);
   const endTime = viewport?.endTime ?? (firstTime === lastTime ? lastTime + DAY_MS / 2 : lastTime);
+  const timeScale = buildCompositeTimeScale(
+    options.timelineSeries ?? dataSeries,
+    startTime,
+    endTime,
+  );
   const usableSeries = viewport
-    ? dataSeries.flatMap((entry) => scopeSeriesToViewport(entry, startTime, endTime) ?? [])
+    ? dataSeries.flatMap((entry) => scopeSeriesToViewport(entry, startTime, endTime, timeScale) ?? [])
     : dataSeries;
   if (usableSeries.length === 0) return null;
   const visibleTimes = uniqueTimes.filter((time) => time >= startTime && time <= endTime);
-  const dates = (visibleTimes.length > 0
-    ? visibleTimes
+  const marketTimes = timeScale.kind === "market"
+    ? timeScale.anchors
+      .map(({ timestamp }) => timestamp)
+      .filter((time) => time >= startTime && time <= endTime)
+    : [];
+  const cursorTimes = timeScale.kind === "market" ? marketTimes : visibleTimes;
+  const dates = (cursorTimes.length > 0
+    ? cursorTimes
     : viewport
       ? [...new Set([startTime, endTime])]
       : uniqueTimes
   ).map((time) => new Date(time));
+  const dateRatios = dates.map((date) => (
+    projectCompositeTimestamp(timeScale, date.getTime())?.ratio ?? 0
+  ));
   const requestedCursor = options.cursorDate ?? null;
   const cursorDate = requestedCursor ? nearestDate(dates, requestedCursor) : null;
   const cursorXRatio = cursorDate
-    ? (cursorDate.getTime() - startTime) / Math.max(endTime - startTime, 1)
+    ? projectCompositeTimestamp(timeScale, cursorDate.getTime())?.ratio ?? null
     : null;
   const orderedPanels = panelSpecsForSeries(usableSeries, panels);
   const panelHeights = allocateCompositePanelHeights(orderedPanels, options.height);
@@ -398,7 +471,9 @@ export function buildCompositeChartScene(
       axes,
       series: panelSeries.flatMap((entry) => {
         const domain = axes[entry.axis];
-        return domain ? [{ source: entry, points: projectSeries(entry, domain, startTime, endTime) }] : [];
+        return domain
+          ? [{ source: entry, points: projectSeries(entry, domain, startTime, endTime, timeScale) }]
+          : [];
       }),
     }];
   });
@@ -408,7 +483,9 @@ export function buildCompositeChartScene(
     height: panelScenes.reduce((sum, panel) => sum + panel.height, 0),
     startTime,
     endTime,
+    timeScale,
     dates,
+    dateRatios,
     panels: panelScenes,
     cursorDate,
     cursorXRatio,
@@ -421,8 +498,36 @@ export function resolveCompositeCursorDate(scene: CompositeChartScene, localX: n
   const ratio = scene.width <= 1
     ? 0
     : Math.max(0, Math.min(1, localX / Math.max(scene.width - 1, 1)));
-  const target = scene.startTime + ratio * (scene.endTime - scene.startTime);
-  return nearestDate(scene.dates, new Date(target));
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  scene.dateRatios.forEach((candidate, index) => {
+    const distance = Math.abs(candidate - ratio);
+    if (distance < nearestDistance) {
+      nearestIndex = index;
+      nearestDistance = distance;
+    }
+  });
+  return scene.dates[nearestIndex] ?? null;
+}
+
+export function resolveCompositeTimeAxisDate(
+  scene: CompositeChartScene,
+  ratio: number,
+): Date {
+  const safeRatio = Math.max(0, Math.min(1, ratio));
+  if (scene.timeScale.kind === "market" && scene.dates.length > 0) {
+    let nearestIndex = 0;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    scene.dateRatios.forEach((candidate, index) => {
+      const distance = Math.abs(candidate - safeRatio);
+      if (distance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = distance;
+      }
+    });
+    return scene.dates[nearestIndex] ?? new Date(scene.startTime);
+  }
+  return new Date(unprojectCompositeTimestamp(scene.timeScale, safeRatio));
 }
 
 export function resolveAdjacentCompositeCursorDate(
