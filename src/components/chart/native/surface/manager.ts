@@ -27,6 +27,8 @@ export interface NativeSurfaceSnapshot {
   visibleRect: CellRect | null;
   bitmap: NativeChartBitmap;
   bitmapKey: string;
+  /** Kitty stacking order; defaults to the plot layer. */
+  imageZIndex?: number;
 }
 
 interface SurfaceEntry {
@@ -87,6 +89,7 @@ function sameSnapshot(a: NativeSurfaceSnapshot, b: NativeSurfaceSnapshot): boole
   return a.id === b.id
     && a.paneId === b.paneId
     && a.bitmapKey === b.bitmapKey
+    && a.imageZIndex === b.imageZIndex
     && sameRect(a.rect, b.rect)
     && sameRect(a.visibleRect, b.visibleRect);
 }
@@ -203,7 +206,11 @@ export class NativeSurfaceManager {
       resolution,
       this.renderer.terminalWidth,
       this.renderer.terminalHeight,
-    );
+    ).map((placement) => (
+      entry.snapshot.imageZIndex === undefined
+        ? placement
+        : { ...placement, zIndex: entry.snapshot.imageZIndex }
+    ));
 
     if (placements.length === 0) {
       entry.imageManager.clear();

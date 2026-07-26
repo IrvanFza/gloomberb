@@ -28,6 +28,7 @@ function serializePlacement(placement: NativePlacement): string {
     placement.cropY,
     placement.cropWidth,
     placement.cropHeight,
+    placement.zIndex ?? "",
   ].join(":");
 }
 
@@ -72,6 +73,7 @@ export class KittyImageManager {
         cropY: entry.cropY,
         cropWidth: entry.cropWidth,
         cropHeight: entry.cropHeight,
+        zIndex: entry.zIndex,
       })),
     ];
 
@@ -106,6 +108,7 @@ export class KittyImageManager {
         cropY: entry.cropY,
         cropWidth: entry.cropWidth,
         cropHeight: entry.cropHeight,
+        zIndex: entry.zIndex,
       }));
     });
 

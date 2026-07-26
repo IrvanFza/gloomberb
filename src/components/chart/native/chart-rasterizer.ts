@@ -1,4 +1,4 @@
-export { renderNativeCrosshairOverlay } from "./raster/crosshair";
+export { renderCrosshairStrips } from "./raster/crosshair";
 export { renderNativeChartBase } from "./raster/price-chart";
 
 export {
@@ -12,6 +12,5 @@ export {
 export type {
   CellRect,
   NativeChartBitmap,
-  NativeCrosshairOverlay,
   NativePlacement,
 } from "./raster/types";

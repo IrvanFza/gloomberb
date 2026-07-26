@@ -66,8 +66,6 @@ describe("composite chart renderers", () => {
     const bitmap = renderCompositePanelBitmap(scene.panels[0]!, {
       pixelWidth: 61,
       pixelHeight: 29,
-      cursorXRatio: null,
-      cursorYRatio: null,
       colors: {
         background: "#000000",
         grid: "#000000",
@@ -148,7 +146,7 @@ describe("composite chart renderers", () => {
     expect(output).toMatch(/[│┼]/);
   });
 
-  test("rasterizes a fully opaque native bitmap with chart and cursor pixels", () => {
+  test("rasterizes a fully opaque native bitmap of the plotted series", () => {
     const scene = buildCompositeChartScene(
       [series("price", "area", [100, 105, 103], "left"), series("revenue", "step", [2, 4, 3], "right")],
       [{ id: "main" }],
@@ -157,8 +155,6 @@ describe("composite chart renderers", () => {
     const bitmap = renderCompositePanelBitmap(scene.panels[0]!, {
       pixelWidth: 62,
       pixelHeight: 36,
-      cursorXRatio: scene.cursorXRatio,
-      cursorYRatio: 0.5,
       colors: {
         background: "#101010",
         grid: "#303030",
@@ -199,8 +195,6 @@ describe("composite chart renderers", () => {
       renderCompositePanelBitmap(scene.panels[0]!, {
         pixelWidth: 960,
         pixelHeight: 320,
-        cursorXRatio: null,
-        cursorYRatio: null,
         colors: {
           background: "#101010",
           grid: "#303030",
@@ -267,8 +261,6 @@ describe("composite chart renderers", () => {
     const bitmap = renderCompositePanelBitmap(scene.panels[0]!, {
       pixelWidth: 62,
       pixelHeight: 36,
-      cursorXRatio: null,
-      cursorYRatio: null,
       colors: {
         background: "#101010",
         grid: "#303030",

@@ -57,6 +57,8 @@ export interface ChartCrosshairOverlay {
   pixelX: number;
   pixelY: number;
   color: string;
+  /** Per-series dots on the cursor column, in bitmap pixels. */
+  markers?: readonly { pixelY: number; color: string }[];
 }
 
 interface TextEditBuffer {

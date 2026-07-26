@@ -46,7 +46,7 @@ import {
   zoomCompositeViewport,
   type CompositeViewportRange,
 } from "./interactions";
-import { drawCompositeCursor, renderCompositePanelBitmap } from "./rasterizer";
+import { renderCompositePanelBitmap } from "./rasterizer";
 import {
   allocateCompositePanelHeights,
   applyCompositeChartCursor,
@@ -76,14 +76,10 @@ function renderPanelBitmap(
   panel: CompositePanelScene,
   bitmapSize: StaticChartBitmapSize,
   colors: CompositeChartColors,
-  cursorXRatio: number | null,
-  cursorYRatio: number | null,
 ): NativeChartBitmap {
   return renderCompositePanelBitmap(panel, {
     pixelWidth: bitmapSize.pixelWidth,
     pixelHeight: bitmapSize.pixelHeight,
-    cursorXRatio,
-    cursorYRatio,
     colors,
   });
 }
@@ -92,15 +88,11 @@ function useCompositePanelBitmap({
   panel,
   bitmapSize,
   colors,
-  cursorXRatio,
-  cursorYRatio,
   isDesktopWeb,
 }: {
   panel: CompositePanelScene;
   bitmapSize: StaticChartBitmapSize | null;
   colors: CompositeChartColors;
-  cursorXRatio: number | null;
-  cursorYRatio: number | null;
   isDesktopWeb: boolean;
 }): NativeChartBitmap | null {
   const [desktopBitmap, setDesktopBitmap] = useState<NativeChartBitmap | null>(null);
@@ -122,19 +114,12 @@ function useCompositePanelBitmap({
     ? { panel, pixelWidth, pixelHeight, colors }
     : null;
 
-  // Cursor moves must not re-rasterize the series: keep the cursor-free raster
-  // memoized and stamp the crosshair onto a copy of its pixels.
-  const terminalBaseBitmap = useMemo(() => {
-    if (isDesktopWeb || !bitmapSize) return null;
-    return renderPanelBitmap(panel, bitmapSize, colors, null, null);
-  }, [bitmapSize, colors, isDesktopWeb, panel]);
+  // The cursor is drawn as a separate overlay, so the plot raster stays cached
+  // (and resident in the terminal) while the crosshair moves.
   const terminalBitmap = useMemo(() => {
-    if (!terminalBaseBitmap) return null;
-    if (cursorXRatio === null && cursorYRatio === null) return terminalBaseBitmap;
-    const withCursor = { ...terminalBaseBitmap, pixels: terminalBaseBitmap.pixels.slice() };
-    drawCompositeCursor(withCursor, panel, cursorXRatio, cursorYRatio, colors);
-    return withCursor;
-  }, [colors, cursorXRatio, cursorYRatio, panel, terminalBaseBitmap]);
+    if (isDesktopWeb || !bitmapSize) return null;
+    return renderPanelBitmap(panel, bitmapSize, colors);
+  }, [bitmapSize, colors, isDesktopWeb, panel]);
 
   useEffect(() => {
     const cancelRender = () => {
@@ -153,8 +138,6 @@ function useCompositePanelBitmap({
           input.panel,
           { pixelWidth: input.pixelWidth, pixelHeight: input.pixelHeight },
           input.colors,
-          null,
-          null,
         );
         if (!desktopActiveRef.current) return;
         desktopRenderedSizeRef.current = {
@@ -218,16 +201,27 @@ function useCompositePanelBitmap({
 }
 
 function resolvePanelCrosshair(
+  panel: CompositePanelScene,
   bitmap: NativeChartBitmap | null,
   cursorXRatio: number | null,
   cursorYRatio: number | null,
   color: string,
 ): ChartSurfaceProps["crosshair"] {
   if (!bitmap || cursorXRatio === null || cursorYRatio === null) return null;
+  const markers = panel.series.flatMap((series) => {
+    const cursorPoint = series.points.find((point) => Math.abs(point.xRatio - cursorXRatio) < 1e-9);
+    return cursorPoint
+      ? [{
+        pixelY: cursorPoint.yRatio * Math.max(bitmap.height - 1, 0),
+        color: series.source.color,
+      }]
+      : [];
+  });
   return {
     pixelX: cursorXRatio * Math.max(bitmap.width - 1, 0),
     pixelY: cursorYRatio * Math.max(bitmap.height - 1, 0),
     color,
+    markers,
   };
 }
 
@@ -313,19 +307,10 @@ function CompositePanelSurface({
     startViewport: CompositeViewportRange;
   } | null>(null);
   const bitmapSize = useStaticChartBitmapSize(plotWidth, panel.height);
-  const bitmap = useCompositePanelBitmap({
-    panel,
-    bitmapSize,
-    colors,
-    cursorXRatio: scene.cursorXRatio,
-    cursorYRatio: activeCursorYRatio,
-    isDesktopWeb,
-  });
+  const bitmap = useCompositePanelBitmap({ panel, bitmapSize, colors, isDesktopWeb });
   const crosshair = useMemo(
-    () => isDesktopWeb
-      ? resolvePanelCrosshair(bitmap, scene.cursorXRatio, activeCursorYRatio, colors.crosshair)
-      : null,
-    [activeCursorYRatio, bitmap, colors.crosshair, isDesktopWeb, scene.cursorXRatio],
+    () => resolvePanelCrosshair(panel, bitmap, scene.cursorXRatio, activeCursorYRatio, colors.crosshair),
+    [activeCursorYRatio, bitmap, colors.crosshair, panel, scene.cursorXRatio],
   );
   const bitmapLayers = useMemo(() => bitmap ? [bitmap] : null, [bitmap]);
   const textLines = useMemo(

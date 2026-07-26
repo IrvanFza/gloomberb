@@ -18,17 +18,6 @@ export interface NativeChartBitmap {
   pixels: Uint8Array;
 }
 
-export interface NativeCrosshairOverlay {
-  width: number;
-  height: number;
-  chartRows: number;
-  pixelX: number | null;
-  pixelY: number | null;
-  colors: {
-    crosshairColor: string;
-  };
-}
-
 export interface NativePlacement {
   column: number;
   row: number;
@@ -38,4 +27,6 @@ export interface NativePlacement {
   cropY: number;
   cropWidth: number;
   cropHeight: number;
+  /** Kitty stacking order; overlays sit above the plot they annotate. */
+  zIndex?: number;
 }

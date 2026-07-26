@@ -19,8 +19,6 @@ import type {
 interface RenderCompositePanelBitmapOptions {
   pixelWidth: number;
   pixelHeight: number;
-  cursorXRatio: number | null;
-  cursorYRatio: number | null;
   colors: CompositeChartColors;
 }
 
@@ -239,37 +237,6 @@ function drawOhlc(
   }
 }
 
-/** Draws the cursor onto already-rasterized panel pixels (mutates `bitmap.pixels`). */
-export function drawCompositeCursor(
-  bitmap: NativeChartBitmap,
-  panel: CompositePanelScene,
-  cursorXRatio: number | null,
-  cursorYRatio: number | null,
-  colors: CompositeChartColors,
-): void {
-  const { width, height, pixels: data } = bitmap;
-  const crosshair = parseHex(colors.crosshair);
-
-  if (cursorXRatio !== null) {
-    const x = clamp(cursorXRatio * Math.max(width - 1, 0), 0, Math.max(width - 1, 0));
-    fillRect(data, width, height, x - 0.55, 0, x + 0.55, height - 1, crosshair, 0.75);
-    for (const series of panel.series) {
-      const cursorPoint = series.points.find((point) => Math.abs(point.xRatio - cursorXRatio) < 1e-9);
-      if (!cursorPoint) continue;
-      const projected = pixelPoint(cursorPoint, width, height);
-      drawCircle(data, width, height, projected.x, projected.y, 2.6, parseHex(series.source.color));
-    }
-  }
-  if (cursorYRatio !== null) {
-    const y = clamp(cursorYRatio * Math.max(height - 1, 0), 0, Math.max(height - 1, 0));
-    fillRect(data, width, height, 0, y - 0.55, width - 1, y + 0.55, crosshair, 0.75);
-    if (cursorXRatio !== null) {
-      const x = clamp(cursorXRatio * Math.max(width - 1, 0), 0, Math.max(width - 1, 0));
-      drawCircle(data, width, height, x, y, 3, crosshair);
-    }
-  }
-}
-
 export function renderCompositePanelBitmap(
   panel: CompositePanelScene,
   options: RenderCompositePanelBitmapOptions,
@@ -332,7 +299,5 @@ export function renderCompositePanelBitmap(
     }
   }
 
-  const bitmap = { width, height, pixels: data };
-  drawCompositeCursor(bitmap, panel, options.cursorXRatio, options.cursorYRatio, options.colors);
-  return bitmap;
+  return { width, height, pixels: data };
 }
