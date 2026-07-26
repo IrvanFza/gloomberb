@@ -27,6 +27,7 @@ export interface TabsProps {
   activeValue: string | null;
   onSelect: (value: string) => void;
   compact?: boolean;
+  dense?: boolean;
   variant?: "underline" | "pill" | "bare";
   closeMode?: "active" | "always";
   addLabel?: string;
@@ -44,6 +45,7 @@ export function Tabs({
   activeValue,
   onSelect,
   compact = false,
+  dense = false,
   variant = "underline",
   closeMode = "always",
   addLabel = "+",
@@ -152,6 +154,7 @@ export function Tabs({
         activeValue={activeValue}
         onSelect={handleSelect}
         compact={compact}
+        dense={dense}
         variant={variant}
         closeMode={closeMode}
         addLabel={addLabel}
@@ -168,6 +171,7 @@ export function Tabs({
       activeValue={activeValue}
       onSelect={handleSelect}
       compact={compact}
+      dense={dense}
       variant={variant}
       closeMode={closeMode}
       addLabel={addLabel}
@@ -198,9 +202,10 @@ function tabWidth(
   tab: TabItem,
   active: boolean,
   closeMode: TabsProps["closeMode"],
+  dense = false,
 ): number {
   const showClose = !!tab.onClose && (closeMode === "always" || active);
-  return displayWidth(tab.label) + 2 + (showClose ? 2 : 0);
+  return displayWidth(tab.label) + (dense ? 1 : 2) + (showClose ? 2 : 0);
 }
 
 function OpenTuiTabs({
@@ -208,6 +213,7 @@ function OpenTuiTabs({
   activeValue,
   onSelect,
   compact = false,
+  dense = false,
   variant = "underline",
   closeMode = "always",
   addLabel = "+",
@@ -235,10 +241,10 @@ function OpenTuiTabs({
   const [hoveredValue, setHoveredValue] = useState<string | null>(null);
   const scrollRef = useRef<ScrollBoxRenderable>(null);
   const tabWidths = useMemo(
-    () => tabs.map((tab) => tabWidth(tab, tab.value === activeValue, closeMode)),
-    [activeValue, closeMode, tabs],
+    () => tabs.map((tab) => tabWidth(tab, tab.value === activeValue, closeMode, dense)),
+    [activeValue, closeMode, dense, tabs],
   );
-  const addWidth = onAdd ? addLabel.length + 2 : 0;
+  const addWidth = onAdd ? addLabel.length + (dense ? 1 : 2) : 0;
   const totalWidth = tabWidths.reduce((sum, width) => sum + width, 0) + addWidth;
 
   useEffect(() => {
@@ -346,7 +352,7 @@ function OpenTuiTabs({
               attributes={attributes}
               onMouseDown={selectTab}
             >
-              {` ${tab.label} `}
+              {dense ? `${tab.label} ` : ` ${tab.label} `}
             </Text>
             {showClose && (
               <Text
@@ -376,7 +382,7 @@ function OpenTuiTabs({
           }}
         >
           <Text fg={hoveredValue === "__add__" ? palette.hoverFg : palette.addFg}>
-            {` ${addLabel} `}
+            {dense ? `${addLabel} ` : ` ${addLabel} `}
           </Text>
         </Box>
       )}

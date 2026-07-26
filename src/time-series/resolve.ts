@@ -6,9 +6,11 @@ import {
 import {
   CHART_RESOLUTION_STEP_MS,
   clampTimeRangeToMaxRange,
+  getBestSupportedResolutionForVisibleWindow,
   getNextBufferRange,
   getPresetResolution,
   getSupportMaxRange,
+  intersectChartResolutionSupport,
   TIME_RANGE_ORDER,
   type ChartResolutionSupport,
   type ManualChartResolution,
@@ -38,7 +40,11 @@ import { applyResolvedSeriesTransform } from "./transforms";
 import { clipSeriesToWindow } from "./alignment";
 import { chartQuoteOverrideKeyForSource } from "./live-quotes";
 import { resolutionForExplicitMarketPeriods } from "./market-resolution";
-import { publicTickerKey } from "../utils/exchanges";
+import {
+  canonicalExchange,
+  publicTickerKey,
+  resolveExchangeTimeZone,
+} from "../utils/exchanges";
 import type {
   ChartResolutionResult,
   ChartSeriesSpec,
@@ -66,6 +72,13 @@ export interface ChartResolveSources {
   now?: Date;
   /** Latest streamed quote per security identity, layered over snapshot data. */
   quoteOverrides?: ReadonlyMap<string, Quote>;
+}
+
+export interface ChartResolveOptions {
+  /** Runtime interaction window used only while the authored resolution is Auto. */
+  autoViewport?: { start: Date; end: Date } | null;
+  /** Approximate number of horizontal observations the current surface can use. */
+  targetPointCount?: number;
 }
 
 /** Raw source data retained while live quotes recompute the chart tail. */
@@ -145,6 +158,22 @@ function requestedBounds(spec: ChartSpec, latestObservation: Date): DateBounds {
   };
 }
 
+function runtimeAutoBounds(options: ChartResolveOptions): DateBounds | null {
+  const start = options.autoViewport?.start.getTime();
+  const end = options.autoViewport?.end.getTime();
+  return typeof start === "number"
+      && Number.isFinite(start)
+      && typeof end === "number"
+      && Number.isFinite(end)
+      && start <= end
+    ? { start, end }
+    : null;
+}
+
+function sameBounds(left: DateBounds | null, right: DateBounds | null): boolean {
+  return left?.start === right?.start && left?.end === right?.end;
+}
+
 function boundsRange(bounds: DateBounds): TimeRange {
   if (bounds.start === null || bounds.end === null) return "ALL";
   return getTimeRangeForDateWindow({
@@ -157,9 +186,20 @@ function requestResolution(
   spec: ChartSpec,
   bounds: DateBounds,
   calculationSeriesIds: ReadonlySet<string>,
+  options: ChartResolveOptions,
+  sharedSupport: readonly ChartResolutionSupport[],
 ): ManualChartResolution {
   if (spec.viewport.resolution !== "auto") return spec.viewport.resolution;
-  const preferred = getPresetResolution(explicitBounds(spec) ? boundsRange(bounds) : spec.viewport.range);
+  const runtimeBounds = runtimeAutoBounds(options);
+  const adaptive = runtimeBounds && runtimeBounds.start !== null && runtimeBounds.end !== null
+    ? getBestSupportedResolutionForVisibleWindow(
+        { start: new Date(runtimeBounds.start), end: new Date(runtimeBounds.end) },
+        sharedSupport,
+        options.targetPointCount ?? 120,
+      )
+    : null;
+  const preferred = adaptive
+    ?? getPresetResolution(explicitBounds(spec) ? boundsRange(bounds) : spec.viewport.range);
   const activeSeries = spec.series.filter((entry) => calculationSeriesIds.has(entry.id));
   return resolutionForExplicitMarketPeriods(preferred, activeSeries);
 }
@@ -292,6 +332,7 @@ function baseSecuritySeries(
   spec: ChartSeriesSpec,
   financials: TickerFinancials,
   index: number,
+  marketResolution?: ManualChartResolution,
 ): ResolvedSeries | null {
   if (spec.source.kind !== "security") return null;
   const field = getTimeSeriesField(spec.source.fieldId);
@@ -305,6 +346,13 @@ function baseSecuritySeries(
   const currencyUnitGroup = field.unit.startsWith("currency") && currency
     ? `${field.unitGroup}:${currency}`
     : field.unitGroup;
+  const marketExchange = spec.source.instrument.exchange
+    || financials.quote?.listingExchangeName
+    || financials.quote?.exchangeName;
+  const marketTimeZone = isMarketFieldId(spec.source.fieldId)
+    && canonicalExchange(marketExchange) !== "CCC"
+    ? resolveExchangeTimeZone(marketExchange)
+    : null;
   return {
     id: spec.id,
     label: spec.label?.trim() || `${symbol} ${field.shortLabel}`,
@@ -314,12 +362,22 @@ function baseSecuritySeries(
     nativeFrequency: spec.source.period && spec.source.period !== "auto"
       ? spec.source.period
       : field.nativeFrequency,
+    timestampMode: spec.source.timestampMode,
     dataShape: field.dataShape,
     style: spec.style,
     transform: spec.transform,
     axis: spec.axis === "right" ? "right" : "left",
     panelId: spec.panelId,
     interpolation: spec.interpolation,
+    timeBasis: marketTimeZone
+      ? {
+          kind: "market",
+          timeZone: marketTimeZone,
+          cadenceMs: marketResolution
+            ? CHART_RESOLUTION_STEP_MS[marketResolution]
+            : undefined,
+        }
+      : undefined,
     points,
   };
 }
@@ -340,6 +398,7 @@ function baseEconomicSeries(
     unit: isPercent ? "%" : units,
     unitGroup: isPercent ? "percent" : `economic:${units.toLowerCase()}`,
     nativeFrequency: "auto",
+    timestampMode: "period-end",
     dataShape: "scalar",
     style: spec.style,
     transform: spec.transform,
@@ -460,6 +519,7 @@ export async function resolveChartSpecData(
   spec: ChartSpec,
   sources: ChartResolveSources,
   cache = new ChartResolveCache(),
+  options: ChartResolveOptions = {},
 ): Promise<ChartResolutionResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -470,6 +530,12 @@ export async function resolveChartSpecData(
     .map((entry) => entry.id));
   const calculationSeriesIds = activeStudyInputSeriesIds(spec.studies);
   visibleSeriesIds.forEach((id) => calculationSeriesIds.add(id));
+  // Keep the first authored market series loaded as the deterministic shared
+  // session anchor even when the user temporarily hides its marks.
+  const primaryMarketSeries = spec.series.find((entry) => (
+    entry.source.kind === "security" && isMarketFieldId(entry.source.fieldId)
+  ));
+  if (primaryMarketSeries) calculationSeriesIds.add(primaryMarketSeries.id);
   if (!sources.dataProvider && spec.series.some((entry) => (
     calculationSeriesIds.has(entry.id) && entry.source.kind === "security"
   ))) {
@@ -478,9 +544,6 @@ export async function resolveChartSpecData(
 
   const referenceNow = sources.now ?? new Date();
   const initialVisibleBounds = requestedBounds(spec, referenceNow);
-  const initialResolution = requestResolution(spec, initialVisibleBounds, calculationSeriesIds);
-  const initialCalculationBounds = calculationBounds(spec, initialVisibleBounds, initialResolution);
-  const hasExplicitWindow = explicitBounds(spec) !== null;
 
   const loadFinancials = (source: Extract<ChartSeriesSpec["source"], { kind: "security" }>) => {
     const key = instrumentKey(source);
@@ -514,6 +577,38 @@ export async function resolveChartSpecData(
     }
     return pending;
   };
+
+  const runtimeBounds = spec.viewport.resolution === "auto"
+    ? runtimeAutoBounds(options)
+    : null;
+  const activeMarketSources = [...new Map(spec.series.flatMap((entry) => (
+    calculationSeriesIds.has(entry.id)
+      && entry.source.kind === "security"
+      && isMarketFieldId(entry.source.fieldId)
+      ? [[instrumentKey(entry.source), entry.source] as const]
+      : []
+  ))).values()];
+  const sharedSupport = runtimeBounds && activeMarketSources.length > 0
+    ? intersectChartResolutionSupport(await Promise.all(
+        activeMarketSources.map((source) => loadResolutionSupport(source)),
+      ))
+    : [];
+  const initialResolution = requestResolution(
+    spec,
+    initialVisibleBounds,
+    calculationSeriesIds,
+    options,
+    sharedSupport,
+  );
+  const requestVisibleBounds = runtimeBounds ?? initialVisibleBounds;
+  const initialCalculationBounds = calculationBounds(
+    spec,
+    requestVisibleBounds,
+    initialResolution,
+  );
+  const hasExplicitWindow = explicitBounds(spec) !== null
+    || (runtimeBounds !== null && !sameBounds(runtimeBounds, initialVisibleBounds));
+
   const loadHistory = async (
     source: Extract<ChartSeriesSpec["source"], { kind: "security" }>,
     all = false,
@@ -595,7 +690,7 @@ export async function resolveChartSpecData(
           ? { ...financials, quote: latestQuote(financials.quote, quoteOverride) }
           : financials;
       if (!merged) throw new Error(`No financial data is available for ${instrumentLabel(source)}.`);
-      const result = baseSecuritySeries(seriesSpec, merged, index);
+      const result = baseSecuritySeries(seriesSpec, merged, index, initialResolution);
       if (!result) throw new Error(`Unknown field ${source.fieldId}.`);
       if (isFundamentalFieldId(source.fieldId) && fundamentalSeriesUsesAvailabilityFallback(merged, source)) {
         result.warning = "Publication dates are unavailable for some observations; period-end dates are used as a fallback.";

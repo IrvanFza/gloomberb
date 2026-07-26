@@ -22,6 +22,13 @@ export interface TextFieldProps {
   textColor?: string;
   placeholderColor?: string;
   onMouseDown?: () => void;
+  onKeyDown?: (event: {
+    name?: string;
+    shift?: boolean;
+    defaultPrevented?: boolean;
+    preventDefault(): void;
+    stopPropagation(): void;
+  }) => void;
 }
 
 const PASSWORD_MASK_CHAR = "*";
@@ -47,6 +54,7 @@ export function TextField({
   textColor = colors.text,
   placeholderColor = colors.textDim,
   onMouseDown,
+  onKeyDown,
 }: TextFieldProps) {
   useRemoteUiNode({
     role: "text-field",
@@ -138,6 +146,7 @@ export function TextField({
           selectionBg={isPassword ? backgroundColor : undefined}
           selectionFg={isPassword ? backgroundColor : undefined}
           showCursor={!isPassword}
+          onKeyDown={onKeyDown}
           onCursorChange={() => syncCursorOffset()}
           onInput={(nextValue: string) => {
             currentValueRef.current = nextValue;

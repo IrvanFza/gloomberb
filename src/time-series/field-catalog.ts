@@ -7,6 +7,10 @@ import type {
 const MARKET_TRANSFORMS: SeriesTransform[] = ["raw", "percent", "index100", "yoy", "qoq", "log"];
 const FUNDAMENTAL_TRANSFORMS: SeriesTransform[] = ["raw", "percent", "index100", "yoy", "qoq", "log"];
 const RATIO_TRANSFORMS: SeriesTransform[] = ["raw", "percent", "index100", "yoy", "qoq"];
+const FUNDAMENTAL_PRESENTATION = {
+  defaultStyle: "columns",
+  defaultInterpolation: "none",
+} as const;
 
 function field(
   definition: TimeSeriesFieldDefinition,
@@ -71,9 +75,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.grossProfit",
@@ -85,9 +88,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.grossMargin",
@@ -99,9 +101,8 @@ const FIELDS = [
     unitGroup: "percent",
     nativeFrequency: "quarterly",
     styles: ["step", "line", "columns", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: RATIO_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.operatingIncome",
@@ -113,9 +114,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.operatingMargin",
@@ -127,9 +127,8 @@ const FIELDS = [
     unitGroup: "percent",
     nativeFrequency: "quarterly",
     styles: ["step", "line", "columns", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: RATIO_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.netIncome",
@@ -141,9 +140,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.netMargin",
@@ -155,9 +153,8 @@ const FIELDS = [
     unitGroup: "percent",
     nativeFrequency: "quarterly",
     styles: ["step", "line", "columns", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: RATIO_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.operatingCashFlow",
@@ -169,9 +166,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.freeCashFlow",
@@ -183,9 +179,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   field({
     id: "fundamental.freeCashFlowMargin",
@@ -197,9 +192,8 @@ const FIELDS = [
     unitGroup: "percent",
     nativeFrequency: "quarterly",
     styles: ["step", "line", "columns", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: RATIO_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   ...([
     ["totalAssets", "Total Assets", "Assets"],
@@ -215,9 +209,8 @@ const FIELDS = [
     unitGroup: "currency-total",
     nativeFrequency: "quarterly" as const,
     styles: ["step", "columns", "line", "points"] as SeriesStyle[],
-    defaultStyle: "step" as const,
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after" as const,
   })),
   field({
     id: "fundamental.eps",
@@ -229,9 +222,8 @@ const FIELDS = [
     unitGroup: "per-share",
     nativeFrequency: "quarterly",
     styles: ["step", "columns", "line", "points"],
-    defaultStyle: "step",
+    ...FUNDAMENTAL_PRESENTATION,
     transforms: FUNDAMENTAL_TRANSFORMS,
-    defaultInterpolation: "step-after",
   }),
   ...([
     ["trailingPE", "Trailing P/E", "P/E"],

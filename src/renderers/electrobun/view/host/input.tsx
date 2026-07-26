@@ -89,13 +89,11 @@ function useLatestRef<T>(value: T): RefObject<T> {
 
 function useSyncedEditableElement<T extends HTMLInputElement | HTMLTextAreaElement>({
   elementRef,
-  propsRef,
   valueRef,
   handleValueChange,
   active,
 }: {
   elementRef: RefObject<T | null>;
-  propsRef: RefObject<Record<string, unknown>>;
   valueRef: RefObject<string>;
   handleValueChange: (nextValue: string) => void;
   active: boolean;
@@ -121,21 +119,6 @@ function useSyncedEditableElement<T extends HTMLInputElement | HTMLTextAreaEleme
       if (animationFrame !== null) globalThis.cancelAnimationFrame?.(animationFrame);
     };
   }, [active, syncElementValue]);
-
-  useEffect(() => {
-    if (!active) return;
-    const commitBeforeOutsideMouseDown = (event: globalThis.MouseEvent) => {
-      const element = elementRef.current;
-      const target = event.target;
-      if (!element || (target instanceof Node && element.contains(target))) return;
-      const nextValue = syncElementValue();
-      callTextHandler(propsRef.current.onBlur, nextValue);
-    };
-    document.addEventListener("mousedown", commitBeforeOutsideMouseDown, true);
-    return () => {
-      document.removeEventListener("mousedown", commitBeforeOutsideMouseDown, true);
-    };
-  }, [active, elementRef, propsRef, syncElementValue]);
 
   return syncElementValue;
 }
@@ -250,7 +233,6 @@ export const WebInput = forwardRef<InputRenderable, Record<string, unknown>>(fun
   }, [propsRef, setValue]);
   const syncElementValue = useSyncedEditableElement({
     elementRef,
-    propsRef,
     valueRef,
     handleValueChange,
     active: props.focused === true || domFocused,
@@ -370,7 +352,6 @@ export const WebTextarea = forwardRef<TextareaRenderable, Record<string, unknown
   }, [propsRef, setValue]);
   const syncElementValue = useSyncedEditableElement({
     elementRef,
-    propsRef,
     valueRef,
     handleValueChange,
     active: props.focused === true || domFocused,

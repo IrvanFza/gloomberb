@@ -474,6 +474,26 @@ describe("computeSurfaceVisibleFragments", () => {
       { x: 10, y: 6, width: 12, height: 8 },
     ]);
   });
+
+  test("subtracts an explicitly local overlay from its own pane", () => {
+    expect(computeSurfaceVisibleFragments(
+      { x: 10, y: 6, width: 12, height: 8 },
+      { x: 10, y: 6, width: 12, height: 8 },
+      120,
+      "chart:float",
+      [{
+        id: "chart:float:quick-add",
+        paneId: "chart:float",
+        rect: { x: 14, y: 6, width: 4, height: 3 },
+        zIndex: 120,
+        occludesOwnPane: true,
+      }],
+    )).toEqual([
+      { x: 10, y: 6, width: 4, height: 3 },
+      { x: 18, y: 6, width: 4, height: 3 },
+      { x: 10, y: 9, width: 12, height: 5 },
+    ]);
+  });
 });
 
 describe("KittyImageManager", () => {
@@ -635,6 +655,51 @@ describe("NativeSurfaceManager", () => {
     });
 
     expect(writes.length).toBe(1);
+  });
+
+  test("clips and restores a surface as a local overlay opens and closes", () => {
+    const renderer = {
+      resolution: { width: 1200, height: 800 },
+      terminalWidth: 120,
+      terminalHeight: 40,
+      write() { return true; },
+    } as unknown as CliRenderer;
+    const manager = new NativeSurfaceManager(renderer);
+    const originalRender = KittyImageManager.prototype.render;
+    const renderedRowCounts: number[][] = [];
+    KittyImageManager.prototype.render = function(
+      _bitmap,
+      placement,
+    ) {
+      const placements = Array.isArray(placement) ? placement : [placement];
+      renderedRowCounts.push(placements.map((entry) => entry.rows));
+    };
+
+    try {
+      manager.setWindowState({
+        paneLayers: [{ paneId: "pane", zIndex: 120 }],
+        occluders: [],
+      });
+      manager.upsertSurface({
+        id: "chart",
+        paneId: "pane",
+        rect: { x: 2, y: 3, width: 20, height: 8 },
+        visibleRect: { x: 2, y: 3, width: 20, height: 8 },
+        bitmap: { width: 200, height: 80, pixels: new Uint8Array(200 * 80 * 4) },
+        bitmapKey: "frame-1",
+      });
+      manager.upsertLocalOccluder({
+        id: "quick-add",
+        paneId: "pane",
+        rect: { x: 2, y: 3, width: 20, height: 2 },
+      });
+      manager.removeLocalOccluder("quick-add");
+
+      expect(renderedRowCounts).toEqual([[8], [6], [8]]);
+    } finally {
+      KittyImageManager.prototype.render = originalRender;
+      manager.destroy();
+    }
   });
 
   test("skips rerendering when an identical surface snapshot is upserted", () => {

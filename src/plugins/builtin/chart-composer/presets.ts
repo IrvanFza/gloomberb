@@ -8,12 +8,14 @@ import {
   type SeriesAxis,
   type SeriesPeriod,
   type SeriesStyle,
+  type SeriesTimestampMode,
   type SeriesTransform,
 } from "../../../time-series/types";
 import type { ChartResolution, TimeRange } from "../../../components/chart/core/types";
 import {
   canonicalTimeSeriesFieldId,
   getTimeSeriesField,
+  isFundamentalFieldId,
   listTimeSeriesFields,
 } from "../../../time-series/field-catalog";
 import {
@@ -146,6 +148,17 @@ export function formatSeriesExpression(series: ChartSeriesSpec): string {
   return `${publicTickerKey(series.source.instrument.symbol, series.source.instrument.exchange)}:${series.source.fieldId}`;
 }
 
+export function chartSeriesLabel(series: ChartSeriesSpec): string {
+  if (series.label?.trim()) return series.label.trim();
+  if (series.source.kind === "economic") return `FRED ${series.source.seriesId}`;
+  const instrument = publicTickerKey(
+    series.source.instrument.symbol,
+    series.source.instrument.exchange,
+  );
+  const field = getTimeSeriesField(series.source.fieldId);
+  return `${instrument} ${field?.shortLabel ?? series.source.fieldId.split(".").at(-1) ?? "Series"}`;
+}
+
 export function getCompatibleSeriesStyles(fieldId: string): SeriesStyle[] {
   return getTimeSeriesField(fieldId)?.styles ?? ["line", "area", "step", "columns", "points"];
 }
@@ -154,21 +167,30 @@ export function getCompatibleSeriesTransforms(fieldId: string): SeriesTransform[
   return getTimeSeriesField(fieldId)?.transforms ?? ["raw", "percent", "index100", "yoy", "qoq", "log"];
 }
 
-/** Apply style invariants shared by the series editor and toolbar mode cycle. */
-export function applySeriesStyle(series: ChartSeriesSpec, style: SeriesStyle): ChartSeriesSpec {
-  const source = series.source.kind === "security"
-    && (
-      series.source.fieldId.startsWith("fundamental.")
-      || series.source.fieldId.startsWith("valuation.")
-    )
-    ? {
-        ...series.source,
-        timestampMode: style === "columns" ? "period-end" as const : "available-at" as const,
-      }
-    : series.source;
+export function defaultFinancialTimestampMode(fieldId: string): SeriesTimestampMode | null {
+  const canonical = canonicalTimeSeriesFieldId(fieldId);
+  if (canonical.startsWith("fundamental.")) return "period-end";
+  if (canonical.startsWith("valuation.")) return "available-at";
+  return null;
+}
+
+export function applySeriesTimestampMode(
+  series: ChartSeriesSpec,
+  timestampMode: SeriesTimestampMode,
+): ChartSeriesSpec {
+  if (series.source.kind !== "security" || !isFundamentalFieldId(series.source.fieldId)) {
+    return series;
+  }
   return {
     ...series,
-    source,
+    source: { ...series.source, timestampMode },
+  };
+}
+
+/** Apply visual invariants without changing the series' authored time basis. */
+export function applySeriesStyle(series: ChartSeriesSpec, style: SeriesStyle): ChartSeriesSpec {
+  return {
+    ...series,
     style,
     transform: coerceSeriesTransformForStyle(style, series.transform),
     interpolation: coerceSeriesInterpolationForStyle(style),
@@ -217,8 +239,7 @@ export function buildSeriesSpec(
   }
   const presentation = defaultSeriesPresentation(expression.fieldId);
   const style = overrides.style ?? presentation.style;
-  const financialSource = expression.fieldId.startsWith("fundamental.")
-    || expression.fieldId.startsWith("valuation.");
+  const timestampMode = defaultFinancialTimestampMode(expression.fieldId);
   return {
     id: `${slug(expression.symbol)}-${slug(expression.fieldId)}-${index + 1}`,
     source: {
@@ -229,9 +250,7 @@ export function buildSeriesSpec(
       },
       fieldId: expression.fieldId,
       period: presentation.period,
-      timestampMode: financialSource
-        ? style === "columns" ? "period-end" : "available-at"
-        : undefined,
+      ...(timestampMode ? { timestampMode } : {}),
     },
     ...(expression.label ? { label: expression.label } : {}),
     transform: presentation.transform,
@@ -262,12 +281,144 @@ function coerceOhlcPanelCollision(
     : series;
 }
 
+function isFinancialSeries(series: ChartSeriesSpec): boolean {
+  return series.source.kind === "security" && isFundamentalFieldId(series.source.fieldId);
+}
+
+function isMarketPriceSeries(series: ChartSeriesSpec): boolean {
+  return series.source.kind === "security"
+    && getTimeSeriesField(series.source.fieldId)?.unitGroup === "price";
+}
+
+function effectiveSeriesUnitGroup(series: ChartSeriesSpec): string {
+  if (series.transform === "percent" || series.transform === "yoy" || series.transform === "qoq") {
+    return "percent";
+  }
+  if (series.transform === "index100") return "index";
+  return series.source.kind === "economic"
+    ? `economic:${series.source.seriesId}`
+    : getTimeSeriesField(series.source.fieldId)?.unitGroup ?? series.source.fieldId;
+}
+
+function nextGeneratedPanelId(
+  spec: Pick<ChartSpec, "panels" | "series" | "studies">,
+  prefix = "panel",
+): string {
+  const used = new Set([
+    ...spec.panels.map((panel) => panel.id),
+    ...spec.series.map((series) => series.panelId),
+    ...spec.studies.map((study) => study.panelId),
+  ]);
+  let index = 2;
+  while (used.has(`${prefix}-${index}`)) index += 1;
+  return `${prefix}-${index}`;
+}
+
+function availableGenericPanelId(
+  spec: ChartSpec,
+  candidate: ChartSeriesSpec,
+): string {
+  const candidateGroup = effectiveSeriesUnitGroup(candidate);
+  const canFit = (panelId: string) => {
+    if (spec.studies.some((study) => study.panelId === panelId && panelId !== "main")) {
+      return false;
+    }
+    const groups = new Set(
+      spec.series
+        .filter((series) => series.panelId === panelId)
+        .map(effectiveSeriesUnitGroup),
+    );
+    return groups.has(candidateGroup) || groups.size < 2;
+  };
+  if (canFit(candidate.panelId)) return candidate.panelId;
+  const generated = spec.panels
+    .map((panel) => panel.id)
+    .filter((panelId) => /^panel-\d+$/.test(panelId))
+    .find(canFit);
+  return generated ?? nextGeneratedPanelId(spec);
+}
+
+function availableFinancialPanelId(
+  spec: ChartSpec,
+  candidate: ChartSeriesSpec,
+): string {
+  const { series, studies } = spec;
+  const candidateGroup = effectiveSeriesUnitGroup(candidate);
+  const existingPanelIds = [
+    ...new Set(
+      series
+        .filter(isFinancialSeries)
+        .map((entry) => entry.panelId)
+        .filter((id) => id !== "main"),
+    ),
+  ];
+  for (const panelId of existingPanelIds) {
+    if (studies.some((study) => study.panelId === panelId)) continue;
+    const occupants = series.filter((entry) => entry.panelId === panelId);
+    const groups = new Set(occupants.filter(isFinancialSeries).map(effectiveSeriesUnitGroup));
+    if (occupants.every(isFinancialSeries) && (groups.has(candidateGroup) || groups.size < 2)) {
+      return panelId;
+    }
+  }
+
+  let suffix = 1;
+  while (true) {
+    const panelId = suffix === 1 ? "fundamentals" : `fundamentals-${suffix}`;
+    const occupants = series.filter((entry) => entry.panelId === panelId);
+    const usedByStudy = studies.some((study) => study.panelId === panelId);
+    if (occupants.length === 0 && !usedByStudy) return panelId;
+    if (!usedByStudy && occupants.every(isFinancialSeries)) {
+      const groups = new Set(occupants.map(effectiveSeriesUnitGroup));
+      if (groups.has(candidateGroup) || groups.size < 2) return panelId;
+    }
+    suffix += 1;
+  }
+}
+
+function placeAppendedSeriesByDefault(
+  series: ChartSeriesSpec,
+  spec: ChartSpec,
+): ChartSeriesSpec {
+  if (series.panelId !== "main") return series;
+  if (isFinancialSeries(series) && spec.series.some(isMarketPriceSeries)) {
+    return applySeriesTimestampMode({
+      ...series,
+      panelId: availableFinancialPanelId(spec, series),
+    }, "available-at");
+  }
+  const sharesPanelWithFinancial = isMarketPriceSeries(series)
+    && spec.series.some((entry) => (
+      entry.panelId === series.panelId && isFinancialSeries(entry)
+    ));
+  return {
+    ...series,
+    panelId: sharesPanelWithFinancial
+      ? nextGeneratedPanelId(spec)
+      : availableGenericPanelId(spec, series),
+  };
+}
+
+function ensureRequiredPanels(
+  existing: readonly ChartPanelSpec[],
+  series: readonly ChartSeriesSpec[],
+  studies: readonly ChartStudySpec[],
+): ChartPanelSpec[] {
+  const known = new Set(existing.map((panel) => panel.id));
+  return [
+    ...existing,
+    ...panelsForSeries(series, studies).filter((panel) => !known.has(panel.id)),
+  ];
+}
+
 export function appendChartSeries(
   spec: ChartSpec,
   expression: ParsedSeriesExpression,
 ): { spec: ChartSpec; series: ChartSeriesSpec } {
   const built = coerceOhlcPanelCollision(
-    buildSeriesSpec(expression, spec.series.length),
+    placeAppendedSeriesByDefault(
+      buildSeriesSpec(expression, spec.series.length),
+      spec,
+    ),
     spec.series,
   );
   const series = {
@@ -280,7 +431,7 @@ export function appendChartSeries(
     spec: {
       ...spec,
       series: nextSeries,
-      panels: reconcilePanels(spec.panels, nextSeries, spec.studies),
+      panels: ensureRequiredPanels(spec.panels, nextSeries, spec.studies),
     },
   };
 }
@@ -290,6 +441,9 @@ function panelsForSeries(series: readonly ChartSeriesSpec[], studies: readonly C
   return [...panelIds].map((id) => ({
     id,
     ...(id === "volume" ? { label: "Volume", height: 0.24 } : {}),
+    ...(id === "fundamentals" || /^fundamentals-\d+$/.test(id)
+      ? { label: id === "fundamentals" ? "Fundamentals" : `Fundamentals ${id.slice("fundamentals-".length)}`, height: 0.35 }
+      : {}),
     ...(id === "rsi" || id === "macd" ? { label: id.toUpperCase(), height: 0.28 } : {}),
     ...(id === "formula" ? { label: "Formula", height: 0.3 } : {}),
     ...(id === "correlation" ? { label: "Correlation", height: 0.3 } : {}),
@@ -297,30 +451,61 @@ function panelsForSeries(series: readonly ChartSeriesSpec[], studies: readonly C
   }));
 }
 
-function defaultExpressionUnitGroup(expression: ParsedSeriesExpression): string {
-  return expression.kind === "economic"
-    ? `economic:${expression.seriesId}`
-    : getTimeSeriesField(expression.fieldId)?.unitGroup ?? expression.fieldId;
-}
-
 /** Keep arbitrary sources legible when one panel would require more than two axes. */
 function buildCustomSeries(expressions: readonly ParsedSeriesExpression[]): ChartSeriesSpec[] {
-  const panelGroups: Array<{ id: string; groups: Set<string> }> = [{ id: "main", groups: new Set() }];
+  const parsedSeries = expressions.map((expression, index) => buildSeriesSpec(expression, index));
+  const mixedPriceAndFinancial = parsedSeries.some(isMarketPriceSeries)
+    && parsedSeries.some(isFinancialSeries);
+  const reservedPanelIds = new Set([
+    "main",
+    ...(mixedPriceAndFinancial ? ["fundamentals"] : []),
+    ...parsedSeries.filter((series) => series.panelId !== "main").map((series) => series.panelId),
+  ]);
+  const panelGroups: Array<{ id: string; scope: string; groups: Set<string> }> = [];
   const builtSeries: ChartSeriesSpec[] = [];
-  expressions.forEach((expression, index) => {
-    const built = buildSeriesSpec(expression, index);
+  const nextPanelId = (prefix: "panel" | "fundamentals") => {
+    let index = 2;
+    while (reservedPanelIds.has(`${prefix}-${index}`)) index += 1;
+    const id = `${prefix}-${index}`;
+    reservedPanelIds.add(id);
+    return id;
+  };
+  const allocatePanel = (scope: string, preferredId: string | null, unitGroup: string) => {
+    const candidates = panelGroups.filter((entry) => entry.scope === scope);
+    const panel = candidates.find((entry) => entry.groups.has(unitGroup))
+      ?? candidates.find((entry) => entry.groups.size < 2)
+      ?? (() => {
+        const id = candidates.length === 0 && preferredId
+          ? preferredId
+          : nextPanelId(scope === "financial" ? "fundamentals" : "panel");
+        const entry = { id, scope, groups: new Set<string>() };
+        panelGroups.push(entry);
+        reservedPanelIds.add(id);
+        return entry;
+      })();
+    panel.groups.add(unitGroup);
+    return panel.id;
+  };
+
+  parsedSeries.forEach((built) => {
     let candidate = built;
     if (built.panelId === "main") {
-      const unitGroup = defaultExpressionUnitGroup(expression);
-      const panel = panelGroups.find((entry) => entry.groups.has(unitGroup))
-        ?? panelGroups.find((entry) => entry.groups.size < 2)
-        ?? (() => {
-          const entry = { id: `panel-${panelGroups.length + 1}`, groups: new Set<string>() };
-          panelGroups.push(entry);
-          return entry;
-        })();
-      panel.groups.add(unitGroup);
-      if (panel.id !== "main") candidate = { ...built, panelId: panel.id };
+      const unitGroup = effectiveSeriesUnitGroup(built);
+      const scope = mixedPriceAndFinancial
+        ? isFinancialSeries(built)
+          ? "financial"
+          : isMarketPriceSeries(built) ? "price" : "other"
+        : "main";
+      const preferredId = scope === "financial"
+        ? "fundamentals"
+        : scope === "price" || scope === "main" ? "main" : null;
+      candidate = {
+        ...built,
+        panelId: allocatePanel(scope, preferredId, unitGroup),
+      };
+      if (scope === "financial") {
+        candidate = applySeriesTimestampMode(candidate, "available-at");
+      }
     }
     builtSeries.push(coerceOhlcPanelCollision(candidate, builtSeries));
   });
@@ -340,7 +525,10 @@ function reconcilePanels(
 ): ChartPanelSpec[] {
   const defaults = panelsForSeries(series, studies);
   const requiredIds = new Set(defaults.map((panel) => panel.id));
-  const retained = existing.filter((panel) => requiredIds.has(panel.id));
+  const managedStudyPanelIds = new Set(["volume", "rsi", "macd", "formula", "correlation"]);
+  const retained = existing.filter((panel) => (
+    requiredIds.has(panel.id) || !managedStudyPanelIds.has(panel.id)
+  ));
   const retainedIds = new Set(retained.map((panel) => panel.id));
   return [
     ...retained,
@@ -442,7 +630,7 @@ export function buildFundamentalChartPreset(
   return chartSpec(normalized.map((instrument, index) => buildSeriesSpec(
     { kind: "security", ...instrument, fieldId: resolvedField },
     index,
-    { style: "step", axis: "left", interpolation: "step-after" },
+    { axis: "left" },
   )), { range: "5Y", resolution: "auto" });
 }
 

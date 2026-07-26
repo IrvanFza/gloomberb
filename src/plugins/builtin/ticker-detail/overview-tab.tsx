@@ -19,6 +19,7 @@ import {
   CompositeChart,
   pricePointsToResolvedSeries,
 } from "../../../components/chart/composite";
+import { resolveExchangeTimeZone } from "../../../utils/exchanges";
 import { appendLiveQuotePoint } from "../../../components/chart/core/data";
 import { PriceReturnStrip } from "../../../components/price-performance";
 import {
@@ -90,6 +91,9 @@ export function OverviewTab({
   const hasHistory = (financials?.priceHistory?.length ?? 0) > 2;
   const chartHistory = appendLiveQuotePoint(financials?.priceHistory ?? [], quote);
   const chartDelta = (chartHistory.at(-1)?.close ?? 0) - (chartHistory[0]?.close ?? 0);
+  const chartTimeZone = resolveExchangeTimeZone(
+    ticker.metadata.exchange || quote?.listingExchangeName || quote?.exchangeName,
+  );
   const priceSeries = pricePointsToResolvedSeries(chartHistory, {
     id: `${ticker.metadata.ticker}:price`,
     label: `${ticker.metadata.ticker} Price`,
@@ -99,6 +103,7 @@ export function OverviewTab({
     axis: "right",
     panelId: "price",
     providerId: quote?.provenance?.price?.providerId ?? quote?.providerId,
+    timeBasis: chartTimeZone ? { kind: "market", timeZone: chartTimeZone } : undefined,
   });
   const hasBidAsk = quote?.bid != null || quote?.ask != null;
   const quoteBookInline = hasBidAsk && contentWidth >= 68;

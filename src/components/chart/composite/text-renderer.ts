@@ -1,4 +1,5 @@
 import { compositeAxisTicks, formatCompositeTimeAxisDate } from "./format";
+import { resolveCompositeTimeAxisDate } from "./scene";
 import { buildCompositeColumnLayout, type CompositeColumnLayout } from "./column-layout";
 import { projectCompositeValue } from "./scene";
 import type {
@@ -72,7 +73,26 @@ function renderLineLike(
       drawLine(rows, previous.x, previous.y, current.x, current.y, "•");
     }
   }
-  for (const point of points) setCell(rows, point.x, point.y, series.source.style === "points" ? "●" : "◆");
+  for (let index = 0; index < points.length; index += 1) {
+    const connectedToPrevious = index > 0 && points[index]!.point.breakBefore === false;
+    const connectedToNext = index + 1 < points.length && points[index + 1]!.point.breakBefore === false;
+    if (!connectedToPrevious && !connectedToNext) {
+      const point = points[index]!;
+      setCell(rows, point.x, point.y, "◆");
+    }
+  }
+}
+
+function renderPoints(
+  rows: string[][],
+  series: CompositeProjectedSeries,
+  width: number,
+  height: number,
+): void {
+  for (const point of series.points) {
+    const cell = cellPoint(point, width, height);
+    setCell(rows, cell.x, cell.y, "●");
+  }
 }
 
 function renderArea(
@@ -103,7 +123,17 @@ function renderColumns(
   const baseline = valueRow(0, domain, height) ?? height - 1;
   for (const point of series.points) {
     const cell = cellPoint(point, width, height);
-    const group = layout.groupByPoint.get(point) ?? { index: 0, count: 1 };
+    const group = layout.groupByPoint.get(point) ?? {
+      index: 0,
+      count: 1,
+      xRatio: point.xRatio,
+      familyKey: "",
+    };
+    cell.x = clamp(
+      Math.round(group.xRatio * Math.max(width - 1, 0)),
+      0,
+      Math.max(width - 1, 0),
+    );
     if (group.count > 1) {
       const groupWidth = Math.min(group.count, width);
       const groupStart = clamp(
@@ -166,7 +196,11 @@ export function renderCompositePanelText(
   }
 
   const columnLayout = buildCompositeColumnLayout(panel);
-  for (const series of panel.series) {
+  const orderedSeries = [...panel.series].sort((left, right) => {
+    const layerRank = (style: string) => style === "area" || style === "columns" ? 0 : 1;
+    return layerRank(left.source.style) - layerRank(right.source.style);
+  });
+  for (const series of orderedSeries) {
     const domain = panel.axes[series.source.axis];
     if (!domain) continue;
     switch (series.source.style) {
@@ -183,8 +217,10 @@ export function renderCompositePanelText(
         break;
       case "line":
       case "step":
-      case "points":
         renderLineLike(rows, series, plotWidth, height);
+        break;
+      case "points":
+        renderPoints(rows, series, plotWidth, height);
         break;
     }
   }
@@ -232,14 +268,14 @@ function placeLabel(chars: string[], label: string, center: number): void {
 
 export function renderCompositeTimeAxis(scene: CompositeChartScene, width: number): string {
   const chars = Array(Math.max(1, width)).fill(" ");
-  const formatDate = (time: number) => formatCompositeTimeAxisDate(
-    new Date(time),
+  const formatDate = (ratio: number) => formatCompositeTimeAxisDate(
+    resolveCompositeTimeAxisDate(scene, ratio),
     scene.startTime,
     scene.endTime,
   );
-  const startLabel = formatDate(scene.startTime);
-  const midpointLabel = formatDate((scene.startTime + scene.endTime) / 2);
-  const endLabel = formatDate(scene.endTime);
+  const startLabel = formatDate(0);
+  const midpointLabel = formatDate(0.5);
+  const endLabel = formatDate(1);
   placeLabel(chars, startLabel, 0);
   if (chars.length >= startLabel.length + midpointLabel.length + endLabel.length + 4) {
     placeLabel(chars, midpointLabel, (chars.length - 1) / 2);

@@ -6,7 +6,11 @@ import {
   parseHex,
   type RgbaColor,
 } from "../native/raster/primitives";
-import { buildCompositeColumnLayout, type CompositeColumnLayout } from "./column-layout";
+import {
+  buildCompositeColumnLayout,
+  type CompositeColumnGroupCenter,
+  type CompositeColumnLayout,
+} from "./column-layout";
 import { projectCompositeValue } from "./scene";
 import type {
   CompositeAxisDomain,
@@ -94,7 +98,11 @@ function median(values: number[]): number | null {
 }
 
 function observationGaps(points: CompositeProjectedPoint[], pixelWidth: number): number[] {
-  const xs = points.map((point) => point.xRatio * Math.max(pixelWidth - 1, 0)).sort((left, right) => left - right);
+  return ratioGaps(points.map((point) => point.xRatio), pixelWidth);
+}
+
+function ratioGaps(ratios: readonly number[], pixelWidth: number): number[] {
+  const xs = ratios.map((ratio) => ratio * Math.max(pixelWidth - 1, 0)).sort((left, right) => left - right);
   const positiveGaps: number[] = [];
   for (let index = 1; index < xs.length; index += 1) {
     const gap = xs[index]! - xs[index - 1]!;
@@ -109,12 +117,46 @@ function observationWidth(points: CompositeProjectedPoint[], pixelWidth: number,
 }
 
 function columnObservationWidth(
-  points: CompositeProjectedPoint[],
+  ratios: readonly number[],
   pixelWidth: number,
   maximum: number,
 ): number {
-  const typicalGap = median(observationGaps(points, pixelWidth));
+  const typicalGap = median(ratioGaps(ratios, pixelWidth));
   return clamp(typicalGap === null ? maximum : typicalGap * 0.58, 2, maximum);
+}
+
+function columnCenterGaps(
+  centers: readonly CompositeColumnGroupCenter[],
+  pixelWidth: number,
+): number[] {
+  const scale = Math.max(pixelWidth - 1, 0);
+  const positiveGaps: number[] = [];
+  for (let index = 1; index < centers.length; index += 1) {
+    const previous = centers[index - 1]!;
+    const current = centers[index]!;
+    const ordinalGap = previous.ordinal !== null
+      && current.ordinal !== null
+      && current.ordinal > previous.ordinal
+      ? current.ordinal - previous.ordinal
+      : 1;
+    const gap = (current.xRatio - previous.xRatio) * scale / ordinalGap;
+    if (gap > 0) positiveGaps.push(gap);
+  }
+  return positiveGaps;
+}
+
+function columnWidthFromCenters(
+  centers: readonly CompositeColumnGroupCenter[],
+  pixelWidth: number,
+  maximum: number,
+): number {
+  const typicalGap = median(columnCenterGaps(centers, pixelWidth));
+  return clamp(typicalGap === null ? maximum : typicalGap * 0.58, 2, maximum);
+}
+
+function maximumColumnClusterWidth(pixelWidth: number, seriesCount: number): number {
+  const maximumSlotWidth = clamp(pixelWidth * 0.04, 18, 72);
+  return maximumSlotWidth * Math.max(1, seriesCount);
 }
 
 export function resolveCompositeColumnWidth(
@@ -122,7 +164,7 @@ export function resolveCompositeColumnWidth(
   pixelWidth: number,
 ): number {
   const maximum = clamp(pixelWidth * 0.04, 18, 72);
-  return columnObservationWidth(points, pixelWidth, maximum);
+  return columnObservationWidth(points.map((point) => point.xRatio), pixelWidth, maximum);
 }
 
 export function resolveCompositeOhlcWidth(
@@ -130,6 +172,39 @@ export function resolveCompositeOhlcWidth(
   pixelWidth: number,
 ): number {
   return observationWidth(points, pixelWidth, 9);
+}
+
+function columnPixelGeometry(
+  projected: CompositeProjectedPoint,
+  width: number,
+  layout: CompositeColumnLayout,
+  widthByFamily: ReadonlyMap<string, number>,
+): { x: number; width: number } {
+  const group = layout.groupByPoint.get(projected) ?? {
+    index: 0,
+    count: 1,
+    xRatio: projected.xRatio,
+    familyKey: "",
+  };
+  const maximum = maximumColumnClusterWidth(width, group.count);
+  const clusterWidth = widthByFamily.get(group.familyKey) ?? maximum;
+  const drawableWidth = Math.min(clusterWidth, Math.max(width - 1, 1));
+  const slotWidth = drawableWidth / group.count;
+  const columnWidth = group.count === 1 ? slotWidth : slotWidth * 0.78;
+  const groupCenter = clamp(
+    group.xRatio * Math.max(width - 1, 0),
+    0,
+    Math.max(width - 1, 0),
+  );
+  const clusterLeft = clamp(
+    groupCenter - drawableWidth / 2,
+    0,
+    Math.max(width - 1 - drawableWidth, 0),
+  );
+  return {
+    x: clusterLeft + slotWidth * (group.index + 0.5),
+    width: columnWidth,
+  };
 }
 
 function drawColumns(
@@ -140,51 +215,20 @@ function drawColumns(
   domain: CompositeAxisDomain,
   color: RgbaColor,
   layout: CompositeColumnLayout,
+  widthByFamily: ReadonlyMap<string, number>,
   opacity: number,
 ): void {
   const baseline = pixelY(0, domain, height) ?? height - 1;
-  const singleSeriesWidth = resolveCompositeColumnWidth(series.points, width);
-  const hasGroupedObservations = series.points.some((point) => (
-    (layout.groupByPoint.get(point)?.count ?? 1) > 1
-  ));
-  const groupedSeriesWidth = hasGroupedObservations
-    ? resolveCompositeColumnWidth(layout.pointsByAxis[series.source.axis], width)
-    : singleSeriesWidth;
   for (const projected of series.points) {
     const point = pixelPoint(projected, width, height);
-    const group = layout.groupByPoint.get(projected) ?? { index: 0, count: 1 };
-    const clusterWidth = group.count > 1 ? groupedSeriesWidth : singleSeriesWidth;
-    if (group.count === 1) {
-      fillRect(
-        data,
-        width,
-        height,
-        point.x - clusterWidth / 2,
-        Math.min(point.y, baseline),
-        point.x + clusterWidth / 2,
-        Math.max(point.y, baseline),
-        color,
-        opacity,
-      );
-      continue;
-    }
-
-    const drawableWidth = Math.min(clusterWidth, Math.max(width - 1, 1));
-    const slotWidth = drawableWidth / group.count;
-    const columnWidth = slotWidth * 0.78;
-    const clusterLeft = clamp(
-      point.x - drawableWidth / 2,
-      0,
-      Math.max(width - 1 - drawableWidth, 0),
-    );
-    const columnCenter = clusterLeft + slotWidth * (group.index + 0.5);
+    const geometry = columnPixelGeometry(projected, width, layout, widthByFamily);
     fillRect(
       data,
       width,
       height,
-      columnCenter - columnWidth / 2,
+      geometry.x - geometry.width / 2,
       Math.min(point.y, baseline),
-      columnCenter + columnWidth / 2,
+      geometry.x + geometry.width / 2,
       Math.max(point.y, baseline),
       color,
       opacity,
@@ -259,6 +303,17 @@ export function renderCompositePanelBitmap(
     return rank(left.source.style) - rank(right.source.style);
   });
   const columnLayout = buildCompositeColumnLayout(panel);
+  const columnWidthByFamily = new Map<string, number>();
+  for (const [family, centers] of columnLayout.centersByFamily) {
+    const maximumColumnWidth = maximumColumnClusterWidth(
+      width,
+      columnLayout.seriesCountByFamily.get(family) ?? 1,
+    );
+    columnWidthByFamily.set(
+      family,
+      columnWidthFromCenters(centers, width, maximumColumnWidth),
+    );
+  }
   const mixesColumnsWithOtherMarks = panel.series.some((series) => series.source.style === "columns")
     && panel.series.some((series) => series.source.style !== "columns");
   for (const series of ordered) {
@@ -275,6 +330,7 @@ export function renderCompositePanelBitmap(
           domain,
           color,
           columnLayout,
+          columnWidthByFamily,
           mixesColumnsWithOtherMarks ? 0.48 : 0.72,
         );
         break;

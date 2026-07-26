@@ -96,6 +96,7 @@ export function PaneSettingsDialogContent({
         return;
       }
       await dialog.alert({
+        closeOnClickOutside: true,
         content: (ctx: AlertContext) => (
           <TuiSelectFieldDialog
             {...ctx}
@@ -110,6 +111,7 @@ export function PaneSettingsDialogContent({
 
     if (field.type === "text") {
       await dialog.alert({
+        closeOnClickOutside: true,
         content: (ctx: AlertContext) => (
           <TextFieldDialog
             {...ctx}
@@ -123,6 +125,7 @@ export function PaneSettingsDialogContent({
     }
 
     await dialog.alert({
+      closeOnClickOutside: true,
       content: (ctx: AlertContext) => (
         <MultiSelectFieldDialog
           {...ctx}

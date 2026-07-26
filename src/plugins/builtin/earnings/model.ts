@@ -1,4 +1,5 @@
 import type { EarningsEvent } from "../../../types/data-provider";
+import type { TickerRecord } from "../../../types/ticker";
 import { parseTickerListInput } from "../../../tickers/list";
 
 export type EarningsDisplayRow =
@@ -9,6 +10,37 @@ export type EarningsEventDisplayRow = EarningsDisplayRow & { kind: "event" };
 
 export function resolveEarningsMonitorSymbols(scopedSymbols: string[], fallbackSymbols: string[]): string[] {
   return scopedSymbols.length > 0 ? scopedSymbols : fallbackSymbols;
+}
+
+export function resolveEarningsCollectionId(
+  settings: Record<string, unknown> | undefined,
+  legacyFallbackId: string | null,
+): string | null {
+  const configuredId = settings?.collectionId;
+  if (typeof configuredId === "string" && configuredId.trim()) {
+    return configuredId.trim();
+  }
+  return legacyFallbackId;
+}
+
+export function trackedEarningsSymbols(
+  tickers: Iterable<TickerRecord>,
+  collectionId: string | null,
+): string[] {
+  const symbols = new Set<string>();
+
+  for (const ticker of tickers) {
+    const { metadata } = ticker;
+    const tracked = collectionId
+      ? metadata.portfolios.includes(collectionId) || metadata.watchlists.includes(collectionId)
+      : metadata.portfolios.length > 0 || metadata.watchlists.length > 0;
+    if (!tracked) continue;
+
+    const symbol = metadata.ticker.trim().toUpperCase();
+    if (symbol) symbols.add(symbol);
+  }
+
+  return [...symbols];
 }
 
 export function scopedSymbolsFromSettings(settings: Record<string, unknown> | undefined): string[] {

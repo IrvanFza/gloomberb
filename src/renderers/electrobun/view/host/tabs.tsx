@@ -17,6 +17,7 @@ export function WebTabs({
   activeValue,
   onSelect,
   compact = false,
+  dense = false,
   variant = "underline",
   closeMode = "always",
   addLabel = "+",
@@ -29,7 +30,7 @@ export function WebTabs({
   const showUnderline = variant === "underline" && !compact;
   const listHeight = showUnderline ? 28 : compact ? WEB_CELL_HEIGHT : "100%";
   const tabFontSize = compact || showUnderline ? 12 : 13;
-  const tabPaddingInline = showUnderline ? 10 : 8;
+  const tabPaddingInline = dense ? 5 : showUnderline ? 10 : 8;
   const tabPaddingBlock = variant === "bare" || variant === "pill" ? 2 : 0;
 
   useEffect(() => {
@@ -74,14 +75,14 @@ export function WebTabs({
         display: "flex",
         flexDirection: "row",
         alignItems: "stretch",
-        gap: 4,
+        gap: dense ? 2 : 4,
         width: "100%",
         height: listHeight,
         minInlineSize: 0,
         flexShrink: 0,
         overflowX: "auto",
         overflowY: "hidden",
-        paddingInline: variant === "underline" ? 0 : 4,
+        paddingInline: variant === "underline" || dense ? 0 : 4,
         paddingBlock: tabPaddingBlock,
         marginBottom: showUnderline ? 4 : 0,
         boxSizing: "border-box",

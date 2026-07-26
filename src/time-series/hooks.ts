@@ -6,7 +6,11 @@ import { useAssetData } from "../plugins/runtime";
 import { useAppSelector } from "../state/app/context";
 import type { FredSeriesRequest } from "../data/fred-series";
 import type { ChartSpec } from "./types";
-import { useChartResolution, type UseChartResolutionResult } from "./use-chart-resolution";
+import {
+  useChartResolution,
+  type UseChartResolutionOptions,
+  type UseChartResolutionResult,
+} from "./use-chart-resolution";
 
 async function loadFred(request: FredSeriesRequest) {
   return loadCachedFredSeries(
@@ -18,7 +22,10 @@ async function loadFred(request: FredSeriesRequest) {
   );
 }
 
-export function useResolvedChartSpec(spec: ChartSpec): UseChartResolutionResult {
+export function useResolvedChartSpec(
+  spec: ChartSpec,
+  options: UseChartResolutionOptions = {},
+): UseChartResolutionResult {
   const dataProvider = useAssetData();
   const tickers = useAppSelector((state) => state.tickers);
   const hydratedSpec = useMemo<ChartSpec>(() => ({
@@ -34,5 +41,5 @@ export function useResolvedChartSpec(spec: ChartSpec): UseChartResolutionResult 
     }),
   }), [spec, tickers]);
   const sources = useMemo(() => ({ dataProvider, loadFredSeries: loadFred }), [dataProvider]);
-  return useChartResolution(hydratedSpec, sources);
+  return useChartResolution(hydratedSpec, sources, options);
 }

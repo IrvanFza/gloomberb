@@ -20,8 +20,10 @@ afterEach(() => {
 
 function Registration({
   onRefresh,
+  refreshDisabled = false,
 }: {
   onRefresh?: () => void;
+  refreshDisabled?: boolean;
 }) {
   usePaneFooter("test", () => {
     return {
@@ -35,10 +37,10 @@ function Registration({
         },
       ],
       hints: [
-        { id: "refresh", key: "r", label: "efresh", onPress: onRefresh },
+        { id: "refresh", key: "r", label: "efresh", onPress: onRefresh, disabled: refreshDisabled },
       ],
     };
-  }, [onRefresh]);
+  }, [onRefresh, refreshDisabled]);
   return null;
 }
 
@@ -55,15 +57,17 @@ function ExternalLinkRegistration() {
 function FooterHarness({
   focused = false,
   onRefresh,
+  refreshDisabled = false,
 }: {
   focused?: boolean;
   onRefresh?: () => void;
+  refreshDisabled?: boolean;
 }) {
   return (
     <PaneFooterProvider>
       {(footer) => (
         <Box width={64} height={1}>
-          <Registration onRefresh={onRefresh} />
+          <Registration onRefresh={onRefresh} refreshDisabled={refreshDisabled} />
           <PaneFooterBar footer={footer} focused={focused} width={64} />
         </Box>
       )}
@@ -108,6 +112,21 @@ describe("PaneFooterBar", () => {
     expect(frame).toContain("source Reuters");
     expect(frame).toContain("[o]pen");
     expect(frame).not.toContain("https://example.com");
+  });
+
+  test("omits disabled controls instead of rendering muted hints", async () => {
+    testSetup = await testRender(
+      <FooterHarness focused refreshDisabled onRefresh={() => {}} />,
+      { width: 64, height: 1 },
+    );
+    await act(async () => {
+      await testSetup!.renderOnce();
+      await testSetup!.renderOnce();
+    });
+
+    const frame = testSetup.captureCharFrame();
+    expect(frame).toContain("Rows 12");
+    expect(frame).not.toContain("[r]efresh");
   });
 
   test("calls hint onPress from mouse interaction", async () => {

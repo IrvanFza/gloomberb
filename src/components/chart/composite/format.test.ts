@@ -3,19 +3,24 @@ import type { CompositeChartScene } from "./types";
 import {
   formatCompositeAxisValue,
   formatCompositeCursorDate,
+  formatCompositePointDetails,
   formatCompositeSeriesValue,
   formatCompositeTimeAxisDate,
 } from "./format";
-import type { ResolvedSeries } from "../../../time-series/types";
+import type { ResolvedSeries, TimeSeriesPoint } from "../../../time-series/types";
 import { renderCompositeTimeAxis } from "./text-renderer";
 
 function scene(start: string, end: string): CompositeChartScene {
+  const startTime = Date.parse(start);
+  const endTime = Date.parse(end);
   return {
     width: 80,
     height: 10,
-    startTime: Date.parse(start),
-    endTime: Date.parse(end),
+    startTime,
+    endTime,
+    timeScale: { kind: "calendar", startTime, endTime },
     dates: [],
+    dateRatios: [],
     panels: [],
     cursorDate: null,
     cursorXRatio: null,
@@ -59,6 +64,45 @@ describe("composite chart timestamp formatting", () => {
     expect(formatCompositeTimeAxisDate(cursor, weekly.startTime, weekly.endTime)).toBe("2025-01-04");
     expect(renderCompositeTimeAxis(weekly, 60)).toContain("2025-01-01");
     expect(renderCompositeTimeAxis(weekly, 60)).toContain("2025-01-08");
+  });
+});
+
+describe("composite chart point details", () => {
+  test("disambiguates fiscal period, availability, and provenance", () => {
+    const point: TimeSeriesPoint = {
+      date: new Date("2025-03-14T00:00:00.000Z"),
+      observedAt: new Date("2025-01-26T00:00:00.000Z"),
+      availableAt: new Date("2025-03-14T00:00:00.000Z"),
+      value: 42,
+      periodLabel: "FY2025",
+      provenance: {
+        providerId: "sec-filings",
+        quality: "reported",
+      },
+    };
+
+    expect(formatCompositePointDetails(point)).toBe(
+      "FY2025 · Period ended 2025-01-26 · Available 2025-03-14 · Reported · Source sec-filings",
+    );
+  });
+
+  test("omits a duplicate availability date for ordinary observations", () => {
+    const observedAt = new Date("2025-01-02T00:00:00.000Z");
+    expect(formatCompositePointDetails({
+      date: observedAt,
+      observedAt,
+      availableAt: observedAt,
+      value: 10,
+    })).toBe("Observed 2025-01-02");
+  });
+
+  test("retains non-midnight observation and availability times", () => {
+    expect(formatCompositePointDetails({
+      date: new Date("2025-01-02T12:05:00.000Z"),
+      observedAt: new Date("2025-01-02T09:30:00.000Z"),
+      availableAt: new Date("2025-01-02T12:05:00.000Z"),
+      value: 10,
+    })).toBe("Observed 2025-01-02 09:30 UTC · Available 2025-01-02 12:05 UTC");
   });
 });
 

@@ -23,6 +23,7 @@ function sourceEvidence(series: ChartSeriesSpec) {
       exchange: series.source.instrument.exchange ?? null,
       fieldId: series.source.fieldId,
       period: series.source.period ?? "auto",
+      timestampMode: series.source.timestampMode ?? null,
     }
     : {
       sourceKind: "economic",

@@ -1,4 +1,4 @@
-import type { ResolvedSeries } from "../../../time-series/types";
+import type { ResolvedSeries, TimeSeriesPoint } from "../../../time-series/types";
 import type { CompositeAxisDomain } from "./types";
 
 const CURRENCY_SYMBOLS: Record<string, string> = {
@@ -85,6 +85,43 @@ export function formatCompositeCursorDate(date: Date, startTime: number, endTime
   return isIntradaySpan(startTime, endTime)
     ? `${utcDate(date)} ${utcTime(date)} UTC`
     : utcDate(date);
+}
+
+function validUtcTimestamp(date: Date | undefined): string | null {
+  if (!date || !Number.isFinite(date.getTime())) return null;
+  return date.getUTCHours() === 0
+      && date.getUTCMinutes() === 0
+      && date.getUTCSeconds() === 0
+      && date.getUTCMilliseconds() === 0
+    ? utcDate(date)
+    : `${utcDate(date)} ${utcTime(date)} UTC`;
+}
+
+/**
+ * Concise, audit-friendly context for an observation. Kept separate from the
+ * visible legend so fiscal-period and availability metadata is available on
+ * demand without reducing chart density.
+ */
+export function formatCompositePointDetails(point: TimeSeriesPoint | null | undefined): string {
+  if (!point) return "";
+  const details: string[] = [];
+  const periodLabel = point.periodLabel?.trim();
+  const observedAt = validUtcTimestamp(point.observedAt);
+  const availableAt = validUtcTimestamp(point.availableAt);
+
+  if (periodLabel) details.push(periodLabel);
+  if (observedAt) {
+    const isFiscalPeriod = periodLabel && periodLabel.toLowerCase() !== "current";
+    details.push(`${isFiscalPeriod ? "Period ended" : "Observed"} ${observedAt}`);
+  }
+  if (availableAt && availableAt !== observedAt) details.push(`Available ${availableAt}`);
+
+  const quality = point.provenance?.quality;
+  if (quality) details.push(`${quality[0]!.toUpperCase()}${quality.slice(1)}`);
+  const providerId = point.provenance?.providerId?.trim();
+  if (providerId) details.push(`Source ${providerId}`);
+
+  return details.join(" · ");
 }
 
 /** Compact UTC tick label selected from the full visible chart span. */

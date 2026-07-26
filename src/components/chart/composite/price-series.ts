@@ -1,4 +1,11 @@
-import type { ResolvedSeries, SeriesPeriod, SeriesStyle, SeriesTransform, TimeSeriesPoint } from "../../../time-series/types";
+import type {
+  ResolvedSeries,
+  ResolvedSeriesMarketTimeBasis,
+  SeriesPeriod,
+  SeriesStyle,
+  SeriesTransform,
+  TimeSeriesPoint,
+} from "../../../time-series/types";
 import type { PricePoint } from "../../../types/financials";
 
 export interface PricePointsToResolvedSeriesOptions {
@@ -14,6 +21,7 @@ export interface PricePointsToResolvedSeriesOptions {
   panelId?: string;
   providerId?: string;
   warning?: string;
+  timeBasis?: ResolvedSeriesMarketTimeBasis;
 }
 
 function finiteOrNull(value: number | null | undefined): number | null {
@@ -61,6 +69,7 @@ export function pricePointsToResolvedSeries(
     axis: options.axis ?? "left",
     panelId: options.panelId ?? "main",
     interpolation: "none",
+    timeBasis: options.timeBasis,
     points: [...byTimestamp.values()].sort((left, right) => left.date.getTime() - right.date.getTime()),
     warning: options.warning,
   };

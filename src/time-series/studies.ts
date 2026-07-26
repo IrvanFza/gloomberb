@@ -88,6 +88,7 @@ function outputSeries(
     axis: spec.axis === "auto" ? options.axis ?? input.axis : spec.axis,
     panelId: spec.panelId,
     interpolation: options.interpolation ?? "none",
+    timeBasis: input.timeBasis,
     points: options.points,
   };
 }

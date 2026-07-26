@@ -11,6 +11,7 @@ import {
   applyChartComposerPaneSetting,
   buildChartComposerPaneSettingsDef,
   CHART_SETTING_KEYS,
+  getChartInlineStyleTarget,
 } from "./settings";
 
 function field(key: string, type: PaneSettingField["type"] = "text"): PaneSettingField {
@@ -45,7 +46,29 @@ describe("chart composer pane settings", () => {
       [CHART_SETTING_KEYS.resolution]: "auto",
       [CHART_SETTING_KEYS.mode]: "candles",
     });
+    expect(definition.fields.at(-1)?.label).toBe("Style (AAPL Price)");
     expect(definition.applyValue).toBe(applyChartComposerPaneSetting);
+  });
+
+  test("routes multi-series styling through the series editor", () => {
+    const spec = buildComparisonChartPreset(["AAPL", "MSFT"]);
+    const definition = buildChartComposerPaneSettingsDef({
+      [CHART_SPEC_SETTING_KEY]: spec,
+    });
+
+    expect(definition.fields.map((entry) => entry.key)).not.toContain(CHART_SETTING_KEYS.mode);
+    expect(() => applyChartComposerPaneSetting(
+      { [CHART_SPEC_SETTING_KEY]: spec },
+      field(CHART_SETTING_KEYS.mode, "select"),
+      "area",
+    )).toThrow("Series editor");
+    expect(getChartInlineStyleTarget({
+      ...spec,
+      series: [
+        { ...spec.series[0]!, visible: false },
+        spec.series[1]!,
+      ],
+    })).toBeNull();
   });
 
   test("updates nested chart state without persisting duplicate derived keys", () => {
@@ -77,7 +100,7 @@ describe("chart composer pane settings", () => {
     expect(nextSettings).not.toHaveProperty("chartExpression");
   });
 
-  test("applies range, resolution, custom dates, indicators, formulas, and mode to the chart spec", () => {
+  test("applies range, resolution, custom dates, indicators, formulas, and single-series style", () => {
     let settings: Record<string, unknown> = {
       [CHART_SPEC_SETTING_KEY]: buildComparisonChartPreset(["AAPL", "MSFT"]),
     };
@@ -101,19 +124,12 @@ describe("chart composer pane settings", () => {
       field(CHART_SETTING_KEYS.resolution, "select"),
       "1wk",
     );
-    settings = applyChartComposerPaneSetting(
-      settings,
-      field(CHART_SETTING_KEYS.mode, "select"),
-      "area",
-    );
     let spec = settings[CHART_SPEC_SETTING_KEY] as ReturnType<typeof buildComparisonChartPreset>;
 
     expect(getSelectedBuiltinStudies(spec)).toEqual(["sma20"]);
     expect(getSelectedPairStudies(spec)).toEqual(["ratio", "correlation"]);
     expect(spec.viewport.dateWindow).toEqual({ start: "2025-01-01", end: "2025-06-30" });
     expect(spec.viewport.resolution).toBe("1wk");
-    expect(spec.series[0]?.style).toBe("area");
-
     settings = applyChartComposerPaneSetting(
       settings,
       field(CHART_SETTING_KEYS.range, "select"),
@@ -122,6 +138,13 @@ describe("chart composer pane settings", () => {
     spec = settings[CHART_SPEC_SETTING_KEY] as ReturnType<typeof buildComparisonChartPreset>;
     expect(spec.viewport.range).toBe("1Y");
     expect(spec.viewport.dateWindow).toBeUndefined();
+
+    const single = applyChartComposerPaneSetting(
+      { [CHART_SPEC_SETTING_KEY]: buildPriceChartPreset("AAPL") },
+      field(CHART_SETTING_KEYS.mode, "select"),
+      "area",
+    )[CHART_SPEC_SETTING_KEY] as ReturnType<typeof buildPriceChartPreset>;
+    expect(single.series[0]?.style).toBe("area");
   });
 
   test("rejects invalid date windows and incompatible modes", () => {

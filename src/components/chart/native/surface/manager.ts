@@ -18,6 +18,14 @@ export interface NativeOccluder {
   paneId?: string | null;
   rect: CellRect;
   zIndex: number;
+  /** Explicit overlays may cover a native surface inside their own pane. */
+  occludesOwnPane?: boolean;
+}
+
+export interface NativeLocalOccluder {
+  id: string;
+  paneId: string;
+  rect: CellRect;
 }
 
 export interface NativeSurfaceSnapshot {
@@ -62,6 +70,7 @@ function sameOccluder(a: NativeOccluder, b: NativeOccluder): boolean {
   return a.id === b.id
     && (a.paneId ?? null) === (b.paneId ?? null)
     && a.zIndex === b.zIndex
+    && a.occludesOwnPane === b.occludesOwnPane
     && sameRect(a.rect, b.rect);
 }
 
@@ -106,7 +115,11 @@ export function computeSurfaceVisibleFragments(
   if (!clipped) return [];
 
   const relevantCuts = occluders
-    .filter((occluder) => occluder.paneId !== paneId && occluder.zIndex >= surfaceZIndex)
+    .filter((occluder) => (
+      occluder.paneId === paneId
+        ? occluder.occludesOwnPane === true
+        : occluder.zIndex >= surfaceZIndex
+    ))
     .sort((left, right) => right.zIndex - left.zIndex)
     .map((occluder) => occluder.rect);
 
@@ -116,6 +129,7 @@ export function computeSurfaceVisibleFragments(
 export class NativeSurfaceManager {
   private windowState: NativeWindowState = { paneLayers: [], occluders: [] };
   private readonly surfaces = new Map<string, SurfaceEntry>();
+  private readonly localOccluders = new Map<string, NativeLocalOccluder>();
 
   constructor(private readonly renderer: CliRenderer) {}
 
@@ -171,10 +185,29 @@ export class NativeSurfaceManager {
     this.surfaces.delete(id);
   }
 
+  upsertLocalOccluder(occluder: NativeLocalOccluder) {
+    const existing = this.localOccluders.get(occluder.id);
+    if (
+      existing
+      && existing.paneId === occluder.paneId
+      && sameRect(existing.rect, occluder.rect)
+    ) {
+      return;
+    }
+    this.localOccluders.set(occluder.id, occluder);
+    this.syncAll();
+  }
+
+  removeLocalOccluder(id: string) {
+    if (!this.localOccluders.delete(id)) return;
+    this.syncAll();
+  }
+
   destroy() {
     for (const id of [...this.surfaces.keys()]) {
       this.removeSurface(id);
     }
+    this.localOccluders.clear();
   }
 
   private syncAll() {
@@ -191,12 +224,17 @@ export class NativeSurfaceManager {
     }
 
     const surfaceZIndex = this.windowState.paneLayers.find((layer) => layer.paneId === entry.snapshot.paneId)?.zIndex ?? 0;
+    const localOccluders: NativeOccluder[] = [...this.localOccluders.values()].map((occluder) => ({
+      ...occluder,
+      zIndex: this.windowState.paneLayers.find((layer) => layer.paneId === occluder.paneId)?.zIndex ?? 0,
+      occludesOwnPane: true,
+    }));
     const fragments = computeSurfaceVisibleFragments(
       entry.snapshot.rect,
       entry.snapshot.visibleRect,
       surfaceZIndex,
       entry.snapshot.paneId,
-      this.windowState.occluders,
+      [...this.windowState.occluders, ...localOccluders],
     );
 
     const placements = computeNativePlacements(

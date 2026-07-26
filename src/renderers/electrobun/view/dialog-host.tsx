@@ -15,6 +15,17 @@ interface DialogState {
 
 let nextDialogId = 1;
 
+export function isDialogDismissKey(event: Pick<KeyboardEvent, "key" | "isComposing">): boolean {
+  return !event.isComposing && (event.key === "Escape" || event.key === "Esc");
+}
+
+export function shouldFocusDialogContainer(
+  dialog: Pick<HTMLElement, "contains">,
+  activeElement: Element | null,
+): boolean {
+  return activeElement === null || !dialog.contains(activeElement);
+}
+
 export function WebDialogHostProvider({ children }: { children: ReactNode }) {
   useThemeColors();
   const [dialogState, setDialogState] = useState<DialogState | null>(null);
@@ -54,9 +65,29 @@ export function WebDialogHostProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!dialogState) return;
-    const frame = requestAnimationFrame(() => dialogElementRef.current?.focus({ preventScroll: true }));
+    const frame = requestAnimationFrame(() => {
+      const dialogElement = dialogElementRef.current;
+      if (
+        dialogElement
+        && shouldFocusDialogContainer(dialogElement, document.activeElement)
+      ) {
+        dialogElement.focus({ preventScroll: true });
+      }
+    });
     return () => cancelAnimationFrame(frame);
   }, [dialogState?.id]);
+
+  useEffect(() => {
+    if (!dialogState) return;
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (!isDialogDismissKey(event)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close(undefined);
+    };
+    window.addEventListener("keydown", dismissOnEscape, true);
+    return () => window.removeEventListener("keydown", dismissOnEscape, true);
+  }, [close, dialogState?.id]);
 
   const api = useMemo<DialogApi>(() => ({
     alert: open,

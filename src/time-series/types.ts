@@ -8,6 +8,7 @@ export type SeriesStyle = "line" | "area" | "step" | "columns" | "points" | "can
 export type SeriesTransform = "raw" | "percent" | "index100" | "yoy" | "qoq" | "log";
 export type SeriesAxis = "auto" | "left" | "right";
 export type SeriesInterpolation = "none" | "step-after";
+export type SeriesTimestampMode = "available-at" | "period-end";
 export type PanelScale = "linear" | "log";
 
 export interface SecuritySeriesSource {
@@ -15,7 +16,7 @@ export interface SecuritySeriesSource {
   instrument: InstrumentRef;
   fieldId: string;
   period?: SeriesPeriod;
-  timestampMode?: "available-at" | "period-end";
+  timestampMode?: SeriesTimestampMode;
 }
 
 export interface EconomicSeriesSource {
@@ -103,6 +104,14 @@ export interface TimeSeriesPoint {
   };
 }
 
+export interface ResolvedSeriesMarketTimeBasis {
+  kind: "market";
+  /** IANA timezone used to recognize one exchange-local trading day. */
+  timeZone: string;
+  /** Requested bar cadence when known; otherwise the chart derives it. */
+  cadenceMs?: number;
+}
+
 export interface ResolvedSeries {
   id: string;
   label: string;
@@ -110,12 +119,16 @@ export interface ResolvedSeries {
   unit: string;
   unitGroup: string;
   nativeFrequency: SeriesPeriod;
+  /** Authored time basis retained for layout and cursor semantics. */
+  timestampMode?: SeriesTimestampMode;
   dataShape: SeriesDataShape;
   style: SeriesStyle;
   transform: SeriesTransform;
   axis: Exclude<SeriesAxis, "auto">;
   panelId: string;
   interpolation: SeriesInterpolation;
+  /** Present only for exchange-traded market observations. */
+  timeBasis?: ResolvedSeriesMarketTimeBasis;
   points: TimeSeriesPoint[];
   warning?: string;
 }

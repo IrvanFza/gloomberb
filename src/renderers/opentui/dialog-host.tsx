@@ -13,17 +13,48 @@ function renderDialogContent(content: unknown, context: Record<string, unknown>)
     : content as ReactNode;
 }
 
+function normalizeDialogId(value: unknown): string | undefined {
+  return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+}
+
+function OpenTuiDialogContentBridge({
+  dialog,
+  dialogId,
+  children,
+}: {
+  dialog: DialogApi;
+  dialogId: string | undefined;
+  children: ReactNode;
+}) {
+  const isTopmost = useOpenTuiDialogState(
+    (state) => normalizeDialogId(state.topDialog?.id) === dialogId,
+  );
+  return (
+    <DialogHostProvider
+      dialog={dialog}
+      isOpen={true}
+      dialogId={dialogId}
+      keyboardEnabled={isTopmost}
+    >
+      {children}
+    </DialogHostProvider>
+  );
+}
+
 function OpenTuiDialogBridge({ children }: { children: ReactNode }) {
   const openTuiDialog = useOpenTuiDialog();
   const isOpen = useOpenTuiDialogState((state) => state.isOpen);
   const dialog = useMemo<DialogApi>(() => {
     const wrapOptions = (options: Record<string, unknown>) => ({
       ...options,
-      content: (context: Record<string, unknown>) => (
-        <DialogHostProvider dialog={dialog} isOpen={true}>
-          {renderDialogContent(options.content, context)}
-        </DialogHostProvider>
-      ),
+      content: (context: Record<string, unknown>) => {
+        const dialogId = normalizeDialogId(context.dialogId);
+        return (
+          <OpenTuiDialogContentBridge dialog={dialog} dialogId={dialogId}>
+            {renderDialogContent(options.content, { ...context, dialogId })}
+          </OpenTuiDialogContentBridge>
+        );
+      },
     });
 
     return {
