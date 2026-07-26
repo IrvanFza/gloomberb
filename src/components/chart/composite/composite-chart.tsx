@@ -46,7 +46,7 @@ import {
   zoomCompositeViewport,
   type CompositeViewportRange,
 } from "./interactions";
-import { renderCompositePanelBitmap } from "./rasterizer";
+import { drawCompositeCursor, renderCompositePanelBitmap } from "./rasterizer";
 import {
   allocateCompositePanelHeights,
   applyCompositeChartCursor,
@@ -122,10 +122,19 @@ function useCompositePanelBitmap({
     ? { panel, pixelWidth, pixelHeight, colors }
     : null;
 
-  const terminalBitmap = useMemo(() => {
+  // Cursor moves must not re-rasterize the series: keep the cursor-free raster
+  // memoized and stamp the crosshair onto a copy of its pixels.
+  const terminalBaseBitmap = useMemo(() => {
     if (isDesktopWeb || !bitmapSize) return null;
-    return renderPanelBitmap(panel, bitmapSize, colors, cursorXRatio, cursorYRatio);
-  }, [bitmapSize, colors, cursorXRatio, cursorYRatio, isDesktopWeb, panel]);
+    return renderPanelBitmap(panel, bitmapSize, colors, null, null);
+  }, [bitmapSize, colors, isDesktopWeb, panel]);
+  const terminalBitmap = useMemo(() => {
+    if (!terminalBaseBitmap) return null;
+    if (cursorXRatio === null && cursorYRatio === null) return terminalBaseBitmap;
+    const withCursor = { ...terminalBaseBitmap, pixels: terminalBaseBitmap.pixels.slice() };
+    drawCompositeCursor(withCursor, panel, cursorXRatio, cursorYRatio, colors);
+    return withCursor;
+  }, [colors, cursorXRatio, cursorYRatio, panel, terminalBaseBitmap]);
 
   useEffect(() => {
     const cancelRender = () => {

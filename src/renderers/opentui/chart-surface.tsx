@@ -60,17 +60,18 @@ function sameTarget(left: SurfaceTarget | null, right: SurfaceTarget | null): bo
     && sameRect(left.visibleRect, right.visibleRect);
 }
 
-function hashBitmap(bitmap: NativeChartBitmap): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < bitmap.pixels.length; index += 1) {
-    hash ^= bitmap.pixels[index]!;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16);
-}
+// ponytail: identity token instead of hashing every pixel — renderers always
+// build a new bitmap object per raster, and hashing megabytes per crosshair
+// move was the dominant cost. Mutating a bitmap in place would need a hash.
+const bitmapTokens = new WeakMap<NativeChartBitmap, string>();
+let nextBitmapToken = 1;
 
 function bitmapKey(bitmap: NativeChartBitmap): string {
-  return `${bitmap.width}x${bitmap.height}:${hashBitmap(bitmap)}`;
+  const existing = bitmapTokens.get(bitmap);
+  if (existing) return existing;
+  const token = `${bitmap.width}x${bitmap.height}:${nextBitmapToken++}`;
+  bitmapTokens.set(bitmap, token);
+  return token;
 }
 
 export const OpenTuiChartSurface = forwardRef<unknown, ChartSurfaceProps>(function OpenTuiChartSurface(
