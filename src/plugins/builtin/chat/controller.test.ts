@@ -501,19 +501,76 @@ describe("ChatController", () => {
     const calls: Array<{ channelId: string; opts?: { after?: string; before?: string; limit?: number } }> = [];
     apiClient.getMessages = async (channelId, opts) => {
       calls.push({ channelId, opts });
-      return opts?.after === "m1" ? [next] : [];
+      if (!opts?.after) return [initial, next];
+      return opts.after === "m1" ? [next] : [];
     };
 
     await controller.refreshMessages();
 
-    expect(calls).toEqual([{
-      channelId: "everyone",
-      opts: { limit: 50, after: "m1" },
-    }]);
+    expect(calls[0]?.opts?.after).toBeUndefined();
     expect(controller.getSnapshot().messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(persistence.getState<{ lastCursor: string }>("channel:everyone", { schemaVersion: 1 })).toMatchObject({
       lastCursor: "m2",
     });
+
+    await controller.refreshMessages();
+
+    expect(calls[1]?.opts?.after).toBe("m2");
+  });
+
+  test("recovers a message the cursor already moved past", async () => {
+    const persistence = new MemoryPersistence();
+    const controller = new ChatController();
+    const asked: ChatMessage = {
+      id: "m1",
+      channelId: "everyone",
+      content: "why is the chart glitching",
+      replyToId: null,
+      createdAt: "2026-03-28T00:00:00.000Z",
+      user: { id: "u1", username: "vince", displayName: "Vince" },
+    };
+    const missed: ChatMessage = {
+      id: "m2",
+      channelId: "everyone",
+      content: "charts open with GP",
+      replyToId: "m1",
+      createdAt: "2026-03-28T00:01:00.000Z",
+      user: { id: "u2", username: "gloombot", displayName: "Gloombot" },
+    };
+    const acknowledged: ChatMessage = {
+      id: "m3",
+      channelId: "everyone",
+      content: "got it",
+      replyToId: null,
+      createdAt: "2026-03-28T00:02:00.000Z",
+      user: { id: "u1", username: "vince", displayName: "Vince" },
+    };
+
+    // The cursor already sits on m3, so an incremental fetch can never ask for
+    // m2 again even though the server still has it.
+    persistence.setState("channel:everyone", {
+      draft: "",
+      replyToId: null,
+      lastCursor: "m3",
+      lastViewedMessageId: "m3",
+    }, { schemaVersion: 1 });
+    persistence.setResource(TRANSCRIPT_KIND, TRANSCRIPT_KEY, {
+      messages: [asked, acknowledged],
+    }, {
+      sourceKey: TRANSCRIPT_SOURCE,
+      schemaVersion: TRANSCRIPT_SCHEMA_VERSION,
+      cachePolicy: { staleMs: 1_000, expireMs: 2_000 },
+    });
+
+    controller.attachPersistence(persistence);
+
+    apiClient.getMessages = async (_channelId, opts) => (
+      opts?.after ? [] : [asked, missed, acknowledged]
+    );
+
+    await controller.refreshMessages();
+
+    expect(controller.getSnapshot().messages.map((entry) => entry.id)).toEqual(["m1", "m2", "m3"]);
   });
 
   test("hydrates missing transcript cache without marking history unread", async () => {
@@ -603,19 +660,21 @@ describe("ChatController", () => {
     const calls: Array<{ channelId: string; opts?: { after?: string; before?: string; limit?: number } }> = [];
     apiClient.getMessages = async (channelId, opts) => {
       calls.push({ channelId, opts });
-      return opts?.after === "m1" ? [fresh] : [];
+      return opts?.after ? [] : [cached, fresh];
     };
 
     await controller.refreshMessages();
 
-    expect(calls).toEqual([{
-      channelId: "everyone",
-      opts: { limit: 50, after: "m1" },
-    }]);
+    expect(calls[0]?.opts?.after).toBeUndefined();
     expect(controller.getSnapshot().messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(persistence.getState<{ lastCursor: string }>("channel:everyone", { schemaVersion: 1 })).toMatchObject({
       lastCursor: "m2",
     });
+
+    await controller.refreshMessages();
+
+    // The stale m99 cursor never reaches the server.
+    expect(calls[1]?.opts?.after).toBe("m2");
   });
 
   test("shows a pending message immediately and replaces it when the send succeeds", async () => {
@@ -1398,16 +1457,10 @@ describe("ChatController", () => {
 
     await controller.refreshMessages();
 
-    expect(calls).toEqual([
-      {
-        channelId: "everyone",
-        opts: { limit: 50, after: "2026-03-28T00:00:00.000Z" },
-      },
-      {
-        channelId: "everyone",
-        opts: { limit: 50 },
-      },
-    ]);
+    // The session backfill already ignores the cursor, so the legacy timestamp
+    // is never sent and the old wasted round trip is gone.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.opts?.after).toBeUndefined();
     expect(controller.getSnapshot().messages.map((entry) => entry.id)).toEqual(["m1", "m2"]);
     expect(persistence.getState<{ lastCursor: string }>("channel:everyone", { schemaVersion: 1 })).toMatchObject({
       lastCursor: "m2",

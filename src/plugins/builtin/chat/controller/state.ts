@@ -73,6 +73,12 @@ export interface ChannelRuntimeState {
   refreshMessagesPromise: Promise<void> | null;
   loadOlderMessagesPromise: Promise<void> | null;
   reachedOldestMessage: boolean;
+  /**
+   * False until this session has fetched a full latest page. The incremental
+   * cursor only ever asks for newer messages, so a message missed live can
+   * never be requested again; one uncursored fetch per session repairs it.
+   */
+  backfilled: boolean;
   messages: ChatMessage[];
   pendingMessages: ChatMessage[];
   draft: string;
@@ -105,6 +111,7 @@ export function createEmptyChannelState(): ChannelRuntimeState {
     refreshMessagesPromise: null,
     loadOlderMessagesPromise: null,
     reachedOldestMessage: false,
+    backfilled: false,
     messages: [],
     pendingMessages: [],
     draft: "",
