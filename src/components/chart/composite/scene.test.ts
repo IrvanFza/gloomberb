@@ -397,6 +397,42 @@ describe("composite chart scene", () => {
     expect(layout.groupByPoint.get(second)).toMatchObject({ index: 1, count: 2 });
   });
 
+  test("uses plotted market data when the legend timeline is empty", () => {
+    const timestamps = [
+      "2025-01-03T15:00:00.000Z",
+      "2025-01-03T16:00:00.000Z",
+      "2025-01-06T14:00:00.000Z",
+    ];
+    const price = series({
+      id: "price",
+      timeBasis: {
+        kind: "market",
+        timeZone: "America/New_York",
+        cadenceMs: 60 * 60 * 1_000,
+      },
+      points: timestamps.map((timestamp, index) => {
+        const date = new Date(timestamp);
+        return { date, observedAt: date, value: 100 + index };
+      }),
+    });
+    const scene = buildCompositeChartScene(
+      [price],
+      [{ id: "main" }],
+      {
+        width: 80,
+        height: 10,
+        viewport: {
+          start: new Date(timestamps[0]!),
+          end: new Date(timestamps.at(-1)!),
+        },
+        timelineSeries: [],
+      },
+    );
+
+    expect(scene?.timeScale).toMatchObject({ kind: "market", anchorSeriesId: "price" });
+    expect(scene?.panels[0]?.series[0]?.points.map(({ xRatio }) => xRatio)).toEqual([0, 0.5, 1]);
+  });
+
   test("retains the authored primary market scale when its plotted series is hidden", () => {
     const anchor = series({
       id: "primary-price",
