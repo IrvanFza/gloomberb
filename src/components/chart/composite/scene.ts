@@ -423,8 +423,11 @@ export function buildCompositeChartScene(
   const viewport = explicitViewport(options);
   const startTime = viewport?.startTime ?? (firstTime === lastTime ? firstTime - DAY_MS / 2 : firstTime);
   const endTime = viewport?.endTime ?? (firstTime === lastTime ? lastTime + DAY_MS / 2 : lastTime);
+  const timelineSeries = options.timelineSeries?.some((entry) => (
+    entry.timeBasis?.kind === "market" && entry.points.length > 0
+  )) ? options.timelineSeries : dataSeries;
   const timeScale = buildCompositeTimeScale(
-    options.timelineSeries ?? dataSeries,
+    timelineSeries,
     startTime,
     endTime,
   );
