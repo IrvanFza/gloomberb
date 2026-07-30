@@ -41,6 +41,7 @@ import {
   buildPriceChartPreset,
   applySeriesStyle,
   chartSeriesLabel,
+  defaultFinancialTimestampMode,
   getSelectedBuiltinStudies,
   getSelectedPairStudies,
   setBuiltinStudies,
@@ -67,6 +68,11 @@ const RESOLUTION_TABS_WIDTH = RESOLUTION_TABS.reduce(
   0,
 );
 const AUTO_VIEWPORT_DEBOUNCE_MS = 350;
+
+interface RuntimeChartViewport {
+  start: Date;
+  end: Date;
+}
 
 function footerAnchorPoint(event?: PaneFooterPressEvent): { x: number; y: number } | undefined {
   const x = event?.pixelX;
@@ -110,6 +116,7 @@ function ChartComposerSurface({
     range: spec.viewport.range,
     resolution: spec.viewport.resolution,
     dateWindow: spec.viewport.dateWindow ?? null,
+    maxPoints: spec.viewport.maxPoints ?? null,
     sources: spec.series.map((entry) => entry.source.kind === "security"
       ? [
           entry.id,
@@ -118,20 +125,31 @@ function ChartComposerSurface({
           entry.source.instrument.exchange ?? "",
           entry.source.fieldId,
           entry.source.period ?? "auto",
+          entry.source.timestampMode
+            ?? defaultFinancialTimestampMode(entry.source.fieldId)
+            ?? "",
         ]
       : [entry.id, entry.source.kind, entry.source.seriesId]),
-  }), [spec.series, spec.viewport.dateWindow, spec.viewport.range, spec.viewport.resolution]);
-  const [autoViewportState, setAutoViewportState] = useState<{
+  }), [spec.series, spec.viewport.dateWindow, spec.viewport.maxPoints, spec.viewport.range, spec.viewport.resolution]);
+  const [runtimeViewportState, setRuntimeViewportState] = useState<{
     key: string;
-    viewport: { start: Date; end: Date };
+    adaptiveViewport: RuntimeChartViewport | null;
+    requestViewport: RuntimeChartViewport;
   } | null>(null);
-  const autoViewportTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
-  const autoViewport = autoViewportState?.key === authoredViewportKey
-    && spec.viewport.resolution === "auto"
-    ? autoViewportState.viewport
+  const runtimeViewportTimerRef = useRef<ReturnType<typeof globalThis.setTimeout> | null>(null);
+  const adaptiveViewportRef = useRef<RuntimeChartViewport | null>(null);
+  const requestViewportRef = useRef<RuntimeChartViewport | null>(null);
+  const activeRuntimeViewport = runtimeViewportState?.key === authoredViewportKey
+    ? runtimeViewportState
     : null;
   const targetPointCount = Math.max(60, Math.floor(width * 1.25));
-  const resolution = useResolvedChartSpec(spec, { autoViewport, targetPointCount });
+  const resolution = useResolvedChartSpec(spec, {
+    autoViewport: spec.viewport.resolution === "auto"
+      ? activeRuntimeViewport?.adaptiveViewport
+      : null,
+    requestViewport: activeRuntimeViewport?.requestViewport,
+    targetPointCount,
+  });
   const selectedStudies = getSelectedBuiltinStudies(spec);
   const selectedPairStudies = getSelectedPairStudies(spec);
   const inlineStyleTarget = useMemo(() => getChartInlineStyleTarget(spec), [spec]);
@@ -184,42 +202,55 @@ function ChartComposerSurface({
     if (!focused) dispatch({ type: "FOCUS_PANE", paneId });
   }, [dispatch, focused, paneId]);
   useEffect(() => {
-    if (autoViewportTimerRef.current !== null) {
-      clearTimeout(autoViewportTimerRef.current);
-      autoViewportTimerRef.current = null;
+    if (runtimeViewportTimerRef.current !== null) {
+      clearTimeout(runtimeViewportTimerRef.current);
+      runtimeViewportTimerRef.current = null;
     }
-    setAutoViewportState((current) => current?.key === authoredViewportKey ? current : null);
+    adaptiveViewportRef.current = null;
+    requestViewportRef.current = null;
+    setRuntimeViewportState((current) => current?.key === authoredViewportKey ? current : null);
     return () => {
-      if (autoViewportTimerRef.current !== null) {
-        clearTimeout(autoViewportTimerRef.current);
-        autoViewportTimerRef.current = null;
+      if (runtimeViewportTimerRef.current !== null) {
+        clearTimeout(runtimeViewportTimerRef.current);
+        runtimeViewportTimerRef.current = null;
       }
     };
   }, [authoredViewportKey]);
-  const handleChartViewportChange = useCallback((next: { start: Date; end: Date } | null) => {
-    if (autoViewportTimerRef.current !== null) {
-      clearTimeout(autoViewportTimerRef.current);
-      autoViewportTimerRef.current = null;
+  const handleChartViewportChange = useCallback((
+    next: { start: Date; end: Date } | null,
+    interaction: "pan" | "reset" | "sync" | "zoom",
+  ) => {
+    if (interaction === "sync") return;
+    if (runtimeViewportTimerRef.current !== null) {
+      clearTimeout(runtimeViewportTimerRef.current);
+      runtimeViewportTimerRef.current = null;
     }
-    if (spec.viewport.resolution !== "auto" || !next) {
-      setAutoViewportState(null);
+    if (!next) {
+      adaptiveViewportRef.current = null;
+      requestViewportRef.current = null;
+      setRuntimeViewportState(null);
       return;
     }
     const start = next.start.getTime();
     const end = next.end.getTime();
     if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) return;
-    autoViewportTimerRef.current = globalThis.setTimeout(() => {
-      autoViewportTimerRef.current = null;
-      setAutoViewportState((current) => (
-        current?.key === authoredViewportKey
-          && current.viewport.start.getTime() === start
-          && current.viewport.end.getTime() === end
-          ? current
-          : {
-              key: authoredViewportKey,
-              viewport: { start: new Date(start), end: new Date(end) },
-            }
-      ));
+    const viewport = { start: new Date(start), end: new Date(end) };
+    requestViewportRef.current = viewport;
+    if (interaction === "zoom" && spec.viewport.resolution === "auto") {
+      adaptiveViewportRef.current = viewport;
+    }
+    runtimeViewportTimerRef.current = globalThis.setTimeout(() => {
+      runtimeViewportTimerRef.current = null;
+      const requestViewport = requestViewportRef.current;
+      if (!requestViewport) return;
+      const adaptiveViewport = spec.viewport.resolution === "auto"
+        ? adaptiveViewportRef.current
+        : null;
+      setRuntimeViewportState({
+        key: authoredViewportKey,
+        adaptiveViewport,
+        requestViewport,
+      });
     }, AUTO_VIEWPORT_DEBOUNCE_MS);
   }, [authoredViewportKey, spec.viewport.resolution]);
 
@@ -564,8 +595,10 @@ function ChartComposerSurface({
         <CompositeChart
           series={plottedSeries}
           legendSeries={resolution.legendSeries}
+          timelineSeries={resolution.timelineSeries}
           panels={spec.panels}
           viewport={viewport}
+          viewportResetKey={authoredViewportKey}
           width={Math.max(1, width)}
           height={Math.max(4, height - 1)}
           focused={focused}

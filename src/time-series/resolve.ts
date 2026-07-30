@@ -75,8 +75,10 @@ export interface ChartResolveSources {
 }
 
 export interface ChartResolveOptions {
-  /** Runtime interaction window used only while the authored resolution is Auto. */
+  /** Runtime zoom window used only to choose an adaptive Auto resolution. */
   autoViewport?: { start: Date; end: Date } | null;
+  /** Runtime interaction window used to load history around the visible chart. */
+  requestViewport?: { start: Date; end: Date } | null;
   /** Approximate number of horizontal observations the current surface can use. */
   targetPointCount?: number;
 }
@@ -179,6 +181,18 @@ function requestedBounds(spec: ChartSpec, latestObservation: Date): DateBounds {
 function runtimeAutoBounds(options: ChartResolveOptions): DateBounds | null {
   const start = options.autoViewport?.start.getTime();
   const end = options.autoViewport?.end.getTime();
+  return typeof start === "number"
+      && Number.isFinite(start)
+      && typeof end === "number"
+      && Number.isFinite(end)
+      && start <= end
+    ? { start, end }
+    : null;
+}
+
+function runtimeRequestBounds(options: ChartResolveOptions): DateBounds | null {
+  const start = options.requestViewport?.start.getTime();
+  const end = options.requestViewport?.end.getTime();
   return typeof start === "number"
       && Number.isFinite(start)
       && typeof end === "number"
@@ -468,6 +482,7 @@ function prepareBaseSeriesForStudies(
   series: ResolvedSeries,
   bounds: DateBounds,
   clipToBounds = false,
+  fallbackBaselineBounds?: DateBounds,
 ): ResolvedSeries {
   const baselineTransform = series.transform === "percent" || series.transform === "index100";
   let source = series;
@@ -476,10 +491,14 @@ function prepareBaseSeriesForStudies(
   } else if (clipToBounds) {
     source = { ...series, points: filterPoints(series.points, bounds) };
   }
+  const baseline = baselineTransform
+    ? scalarBaseline(series, bounds)
+      ?? (fallbackBaselineBounds ? scalarBaseline(series, fallbackBaselineBounds) : null)
+    : null;
   return applyResolvedSeriesTransform(
     source,
     source.transform,
-    baselineTransform ? { baseline: scalarBaseline(series, bounds) } : undefined,
+    baselineTransform ? { baseline } : undefined,
   );
 }
 
@@ -517,6 +536,7 @@ function applyStudyPresentationTransforms(
   studies: readonly ChartSpec["studies"][number][],
   rawSeries: readonly ResolvedSeries[],
   visibleBounds: DateBounds,
+  fallbackBaselineBounds?: DateBounds,
 ): ResolvedSeries[] {
   const rawById = new Map(rawSeries.map((series) => [series.id, series] as const));
   return outputs.map((output) => {
@@ -528,6 +548,7 @@ function applyStudyPresentationTransforms(
     if (!input || input.transform === "raw") return output;
     const baseline = input.transform === "percent" || input.transform === "index100"
       ? scalarBaseline(input, visibleBounds)
+        ?? (fallbackBaselineBounds ? scalarBaseline(input, fallbackBaselineBounds) : null)
       : undefined;
     return applyResolvedSeriesTransform(output, input.transform, { baseline });
   });
@@ -608,9 +629,10 @@ export async function resolveChartSpecData(
     );
   };
 
-  const runtimeBounds = spec.viewport.resolution === "auto"
+  const adaptiveBounds = spec.viewport.resolution === "auto"
     ? runtimeAutoBounds(options)
     : null;
+  const requestBounds = runtimeRequestBounds(options) ?? adaptiveBounds;
   const activeMarketSources = [...new Map(spec.series.flatMap((entry) => (
     calculationSeriesIds.has(entry.id)
       && entry.source.kind === "security"
@@ -618,14 +640,14 @@ export async function resolveChartSpecData(
       ? [[instrumentKey(entry.source), entry.source] as const]
       : []
   ))).values()];
-  const resolutionSupportSources = runtimeBounds
+  const resolutionSupportSources = adaptiveBounds
     ? await Promise.all(activeMarketSources.map(async (source) => (
         source.instrument.exchange?.trim()
           ? source
           : sourceWithResolvedExchange(source, await loadFinancials(source))
       )))
     : activeMarketSources;
-  const sharedSupport = runtimeBounds && activeMarketSources.length > 0
+  const sharedSupport = adaptiveBounds && activeMarketSources.length > 0
     ? intersectChartResolutionSupport(await Promise.all(
         resolutionSupportSources.map((source) => loadResolutionSupport(source)),
       ))
@@ -637,14 +659,14 @@ export async function resolveChartSpecData(
     options,
     sharedSupport,
   );
-  const requestVisibleBounds = runtimeBounds ?? initialVisibleBounds;
+  const requestVisibleBounds = requestBounds ?? initialVisibleBounds;
   const initialCalculationBounds = calculationBounds(
     spec,
     requestVisibleBounds,
     initialResolution,
   );
   const hasExplicitWindow = explicitBounds(spec) !== null
-    || (runtimeBounds !== null && !sameBounds(runtimeBounds, initialVisibleBounds));
+    || (requestBounds !== null && !sameBounds(requestBounds, initialVisibleBounds));
 
   const loadHistory = async (
     source: Extract<ChartSeriesSpec["source"], { kind: "security" }>,
@@ -749,6 +771,9 @@ export async function resolveChartSpecData(
   }));
 
   const rawSeries = loaded.filter((entry): entry is ResolvedSeries => !!entry);
+  const marketTimelineSeries = primaryMarketSeries?.visible === false
+    ? rawSeries.filter((entry) => entry.id === primaryMarketSeries.id)
+    : [];
   // Preset ranges describe a window ending at the requested reference time,
   // even when the newest filing or economic observation lags that endpoint.
   // Re-anchoring to the latest observation both mislabels the range and asks
@@ -758,7 +783,7 @@ export async function resolveChartSpecData(
   const studyBounds = initialCalculationBounds;
   const baseSeries = rawSeries
     .filter((entry) => visibleSeriesIds.has(entry.id))
-    .map((entry) => prepareBaseSeriesForStudies(entry, bounds));
+    .map((entry) => prepareBaseSeriesForStudies(entry, bounds, false, requestVisibleBounds));
   const calculationSeries = rawSeries.map((entry) => rawCalculationSeries(entry, studyBounds));
   let resolved = baseSeries;
 
@@ -767,7 +792,13 @@ export async function resolveChartSpecData(
     const studyResult = resolveStudies(calculationSeries, spec.studies);
     resolved = [
       ...resolved,
-      ...applyStudyPresentationTransforms(studyResult.series, spec.studies, rawSeries, bounds),
+      ...applyStudyPresentationTransforms(
+        studyResult.series,
+        spec.studies,
+        rawSeries,
+        bounds,
+        requestVisibleBounds,
+      ),
     ];
     warnings.push(...studyResult.warnings);
     errors.push(...studyResult.errors);
@@ -788,7 +819,7 @@ export async function resolveChartSpecData(
   const resolvedById = new Map(resolved.map((entry) => [entry.id, entry] as const));
   const hiddenBaseSeries = rawSeries
     .filter((entry) => !visibleSeriesIds.has(entry.id))
-    .map((entry) => prepareBaseSeriesForStudies(entry, bounds, true));
+    .map((entry) => prepareBaseSeriesForStudies(entry, bounds, true, requestVisibleBounds));
   const hiddenBaseById = new Map(hiddenBaseSeries.map((entry) => [entry.id, entry] as const));
   const legendSeries = [
     ...spec.series.flatMap((seriesSpec) => {
@@ -821,6 +852,7 @@ export async function resolveChartSpecData(
     series: resolved,
     legendSeries,
     ...(spec.viewport.maxPoints === undefined ? { bufferedSeries } : {}),
+    ...(marketTimelineSeries.length > 0 ? { timelineSeries: marketTimelineSeries } : {}),
     loading: false,
     errors,
     warnings: [...new Set([...priorityWarnings, ...warnings])],

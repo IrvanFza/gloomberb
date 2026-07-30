@@ -115,6 +115,8 @@ export interface CompositeChartProps {
   series: ResolvedSeries[];
   /** Optional legend model; can include hidden series that are not plotted. */
   legendSeries?: ResolvedSeries[];
+  /** Optional hidden market series used to preserve session-time navigation. */
+  timelineSeries?: ResolvedSeries[];
   panels: ChartPanelSpec[];
   width: number;
   height: number;
@@ -125,6 +127,11 @@ export interface CompositeChartProps {
     start: Date;
     end: Date;
   };
+  /**
+   * Stable identity for the authored viewport. Changing it resets user navigation;
+   * viewport updates under the same key are treated as adaptive data refreshes.
+   */
+  viewportResetKey?: string;
   colors?: Partial<CompositeChartColors>;
   axisWidth?: number;
   showLegend?: boolean;
@@ -135,7 +142,10 @@ export interface CompositeChartProps {
   formatValue?: (value: number, series: ResolvedSeries) => string;
   onCursorDateChange?: (date: Date | null) => void;
   /** Reports a user-created viewport, or null when the user resets to the authored viewport. */
-  onViewportChange?: (viewport: { start: Date; end: Date } | null) => void;
+  onViewportChange?: (
+    viewport: { start: Date; end: Date } | null,
+    interaction: "pan" | "reset" | "sync" | "zoom",
+  ) => void;
   onActivate?: () => void;
   onToggleSeries?: (seriesId: string) => void;
   isSeriesToggleable?: (series: ResolvedSeries) => boolean;

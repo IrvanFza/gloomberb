@@ -81,6 +81,12 @@ import type {
 const DESKTOP_BITMAP_RESIZE_DEBOUNCE_MS = 32;
 const LEGEND_WHEEL_DELTA_PER_CELL = 8;
 
+function isVerticalWheelDirection(
+  direction: "up" | "down" | "left" | "right",
+): direction is "up" | "down" {
+  return direction === "up" || direction === "down";
+}
+
 function renderPanelBitmap(
   panel: CompositePanelScene,
   bitmapSize: StaticChartBitmapSize,
@@ -403,21 +409,13 @@ function CompositePanelSurface({
     consumeChartMouseEvent(event);
     const pointerTarget = plotRef.current as unknown as Parameters<typeof getLocalPlotPointer>[1];
     const pointer = getLocalPlotPointer(event, pointerTarget, renderer);
-    if (event.modifiers.ctrl && pointer) {
-      const zoomIn = direction === "up" || direction === "left";
+    if (event.modifiers.ctrl && pointer && isVerticalWheelDirection(direction)) {
+      const zoomIn = direction === "up";
       const magnitude = Math.min(Math.max(Math.abs(event.scroll?.delta ?? 1), 1), 8);
       const pointerRatio = pointer.cellX / Math.max(plotWidth - 1, 1);
-      const anchorDate = resolveCompositeCursorDate(scene, pointer.cellX);
-      const viewportSpan = Math.max(viewport.end.getTime() - viewport.start.getTime(), 1);
-      const viewportAnchorRatio = anchorDate
-        ? Math.max(0, Math.min(
-            1,
-            (anchorDate.getTime() - viewport.start.getTime()) / viewportSpan,
-          ))
-        : pointerRatio;
       onZoomViewport(
         zoomIn ? 1 + magnitude * 0.04 : 1 / (1 + magnitude * 0.04),
-        viewportAnchorRatio,
+        pointerRatio,
       );
       updateCursor(event);
       return;
@@ -737,12 +735,14 @@ function CompositeLegend({
 export function CompositeChart({
   series,
   legendSeries,
+  timelineSeries,
   panels,
   width,
   height,
   focused = false,
   cursorDate,
   viewport,
+  viewportResetKey,
   colors,
   interactive = true,
   axisWidth = 9,
@@ -765,6 +765,12 @@ export function CompositeChart({
   const totalWidth = Math.max(1, Math.floor(width));
   const totalHeight = Math.max(1, Math.floor(height));
   const visibleSeries = useMemo(() => series.filter((entry) => entry.points.length > 0), [series]);
+  const marketTimelineSeries = useMemo(() => {
+    const supplied = timelineSeries?.filter((entry) => entry.points.length > 0) ?? [];
+    return supplied.some((entry) => entry.timeBasis?.kind === "market")
+      ? supplied
+      : visibleSeries;
+  }, [timelineSeries, visibleSeries]);
   const visibleLegendSeries = useMemo(
     () => (legendSeries ?? visibleSeries).filter((entry) => entry.points.length > 0),
     [legendSeries, visibleSeries],
@@ -780,9 +786,23 @@ export function CompositeChart({
         : Math.min(current, visibleLegendSeries.length - 1)
     ));
   }, [visibleLegendSeries.length]);
+  const previousAuthoredViewportRef = useRef<CompositeViewportRange | null>(viewport ?? null);
+  const previousViewportResetKeyRef = useRef(viewportResetKey);
+  const [interactionViewport, setInteractionViewport] = useState<CompositeViewportRange | null>(null);
+  const hasViewportResetKey = viewportResetKey !== undefined
+    || previousViewportResetKeyRef.current !== undefined;
+  const authoredViewportChanged = hasViewportResetKey
+    ? previousViewportResetKeyRef.current !== viewportResetKey
+    : shouldResetCompositeViewport(
+        previousAuthoredViewportRef.current,
+        viewport ?? null,
+      );
+  const navigationAnchorViewport = authoredViewportChanged
+    ? viewport
+    : interactionViewport ?? viewport;
   const navigationBounds = useMemo(
-    () => resolveCompositeNavigationBounds(visibleSeries, viewport),
-    [viewport, visibleSeries],
+    () => resolveCompositeNavigationBounds(visibleSeries, navigationAnchorViewport),
+    [navigationAnchorViewport, visibleSeries],
   );
   const initialViewport = useMemo(() => (
     navigationBounds
@@ -791,17 +811,18 @@ export function CompositeChart({
         : navigationBounds
       : null
   ), [navigationBounds, viewport]);
-  const previousAuthoredViewportRef = useRef<CompositeViewportRange | null>(viewport ?? null);
-  const [interactionViewport, setInteractionViewport] = useState<CompositeViewportRange | null>(null);
-  const authoredViewportChanged = shouldResetCompositeViewport(
-    previousAuthoredViewportRef.current,
-    viewport ?? null,
-  );
+  const viewportSeriesKey = visibleLegendSeries
+    .map((entry) => `${entry.id}:${entry.label}`)
+    .join("|");
+  const clampedInteractionViewport = interactionViewport && navigationBounds
+    ? clampCompositeViewport(interactionViewport, navigationBounds)
+    : interactionViewport;
+  const interactionViewportNeedsSync = !!interactionViewport
+    && !!clampedInteractionViewport
+    && !sameCompositeViewport(interactionViewport, clampedInteractionViewport);
   const currentInteractionViewport = authoredViewportChanged
     ? null
-    : interactionViewport && navigationBounds
-      ? clampCompositeViewport(interactionViewport, navigationBounds)
-      : interactionViewport;
+    : clampedInteractionViewport;
   const effectiveViewport = navigationBounds
     ? currentInteractionViewport
       ? clampCompositeViewport(currentInteractionViewport, navigationBounds)
@@ -809,16 +830,15 @@ export function CompositeChart({
     : null;
   const interactionViewportStart = currentInteractionViewport?.start.getTime() ?? null;
   const interactionViewportEnd = currentInteractionViewport?.end.getTime() ?? null;
-  const viewportSeriesKey = visibleLegendSeries
-    .map((entry) => `${entry.id}:${entry.label}`)
-    .join("|");
   const lastReportedViewportRef = useRef<string | null>(null);
+  const viewportInteractionRef = useRef<"pan" | "reset" | "sync" | "zoom">("reset");
   useEffect(() => {
     if (!onViewportChange) return;
-    const viewportKey = interactionViewportStart === null || interactionViewportEnd === null
+    if (interactionViewportNeedsSync) return;
+    const interactionKey = interactionViewportStart === null || interactionViewportEnd === null
       ? "none"
       : `${interactionViewportStart}:${interactionViewportEnd}`;
-    const key = `${viewportSeriesKey}|${viewportKey}`;
+    const key = `${viewportSeriesKey}|${interactionKey}`;
     // The callback drives adaptive data loading. Seed it from the authored
     // viewport without echoing that controlled value back into the loader.
     if (lastReportedViewportRef.current === null) {
@@ -834,33 +854,48 @@ export function CompositeChart({
             start: new Date(interactionViewportStart),
             end: new Date(interactionViewportEnd),
           },
+      viewportInteractionRef.current,
     );
-  }, [interactionViewportEnd, interactionViewportStart, onViewportChange, viewportSeriesKey]);
+  }, [
+    interactionViewportEnd,
+    interactionViewportNeedsSync,
+    interactionViewportStart,
+    onViewportChange,
+    viewportSeriesKey,
+  ]);
   const minimumViewportSpanMs = useMemo(
     () => navigationBounds ? resolveCompositeMinimumSpanMs(visibleSeries, navigationBounds) : 1,
     [navigationBounds, visibleSeries],
   );
 
   useEffect(() => {
-    const authoredChanged = shouldResetCompositeViewport(
-      previousAuthoredViewportRef.current,
-      viewport ?? null,
-    );
     previousAuthoredViewportRef.current = viewport ?? null;
-    if (authoredChanged || (interactionViewport && !navigationBounds)) {
+    previousViewportResetKeyRef.current = viewportResetKey;
+    if (
+      authoredViewportChanged
+      || (interactionViewport && !navigationBounds)
+    ) {
+      viewportInteractionRef.current = "reset";
       setInteractionViewport(null);
       return;
     }
-    if (interactionViewport && navigationBounds) {
-      const clamped = clampCompositeViewport(interactionViewport, navigationBounds);
-      if (!sameCompositeViewport(clamped, interactionViewport)) {
-        setInteractionViewport(clamped);
-      }
+    if (interactionViewportNeedsSync && clampedInteractionViewport) {
+      viewportInteractionRef.current = "sync";
+      setInteractionViewport(clampedInteractionViewport);
     }
-  }, [interactionViewport, navigationBounds, viewport]);
+  }, [
+    authoredViewportChanged,
+    clampedInteractionViewport,
+    interactionViewport,
+    interactionViewportNeedsSync,
+    navigationBounds,
+    viewport,
+    viewportResetKey,
+  ]);
 
   const zoomViewport = useCallback((zoomFactor: number, anchorRatio = 1) => {
     if (!navigationBounds || !initialViewport) return;
+    viewportInteractionRef.current = "zoom";
     setInteractionViewport((current) => {
       const base = current ?? initialViewport;
       const next = zoomCompositeViewport(
@@ -869,23 +904,30 @@ export function CompositeChart({
         zoomFactor,
         anchorRatio,
         minimumViewportSpanMs,
-        visibleSeries,
+        marketTimelineSeries,
       );
+      if (sameCompositeViewport(next, base)) return current;
       return sameCompositeViewport(next, initialViewport) ? null : next;
     });
-  }, [initialViewport, minimumViewportSpanMs, navigationBounds, visibleSeries]);
+  }, [initialViewport, marketTimelineSeries, minimumViewportSpanMs, navigationBounds]);
   const panViewport = useCallback((
     shiftRatio: number,
     fromViewport?: CompositeViewportRange,
   ) => {
     if (!navigationBounds || !initialViewport) return;
+    viewportInteractionRef.current = "pan";
     setInteractionViewport((current) => {
       const base = fromViewport ?? current ?? initialViewport;
-      const next = panCompositeViewport(base, navigationBounds, shiftRatio, visibleSeries);
+      const next = panCompositeViewport(base, navigationBounds, shiftRatio, marketTimelineSeries);
+      if (sameCompositeViewport(next, base)) {
+        if (!fromViewport) return current;
+        return sameCompositeViewport(base, initialViewport) ? null : base;
+      }
       return sameCompositeViewport(next, initialViewport) ? null : next;
     });
-  }, [initialViewport, navigationBounds, visibleSeries]);
+  }, [initialViewport, marketTimelineSeries, navigationBounds]);
   const resetViewport = useCallback(() => {
+    viewportInteractionRef.current = "reset";
     setInteractionViewport(null);
   }, []);
   const hasLeftAxis = visibleSeries.some((entry) => entry.axis === "left");
@@ -915,8 +957,8 @@ export function CompositeChart({
     width: 1,
     height: Math.max(panelCount, 1),
     viewport: effectiveViewport ?? undefined,
-    timelineSeries: visibleLegendSeries,
-  }), [effectiveViewport, panelCount, panels, visibleLegendSeries, visibleSeries]);
+    timelineSeries: marketTimelineSeries,
+  }), [effectiveViewport, marketTimelineSeries, panelCount, panels, visibleSeries]);
   const layoutPanels = useMemo<CompositePanelScene[] | null>(() => {
     if (!projectedScene) return null;
     const panelSpecById = new Map(panels.map((panel) => [panel.id, panel] as const));
@@ -958,8 +1000,8 @@ export function CompositeChart({
     if (!interactive || !navigationBounds || !direction) return;
     onActivate?.();
     consumeChartMouseEvent(event);
-    if (event.modifiers.ctrl) {
-      const zoomIn = direction === "up" || direction === "left";
+    if (event.modifiers.ctrl && isVerticalWheelDirection(direction)) {
+      const zoomIn = direction === "up";
       if (!zoomIn) {
         resetViewport();
         return;

@@ -325,7 +325,7 @@ describe("resolveChartSpecData", () => {
     expect(requests).toEqual([{ range: "1W", resolution: "5m" }]);
   });
 
-  test("adapts Auto to a zoomed historical window without changing the authored viewport", async () => {
+  test("keeps Auto zoom selection while loading a separately panned history window", async () => {
     const detailedRequests: Array<{
       start: string;
       end: string;
@@ -377,6 +377,10 @@ describe("resolveChartSpecData", () => {
       new ChartResolveCache(),
       {
         autoViewport: {
+          start: new Date("2025-03-10T00:00:00.000Z"),
+          end: new Date("2025-03-17T00:00:00.000Z"),
+        },
+        requestViewport: {
           start: new Date("2025-01-10T00:00:00.000Z"),
           end: new Date("2025-01-17T00:00:00.000Z"),
         },
@@ -395,6 +399,64 @@ describe("resolveChartSpecData", () => {
       timeZone: "America/New_York",
       cadenceMs: 15 * 60 * 1_000,
     });
+  });
+
+  test("keeps percent transforms and studies defined in a panned history window", async () => {
+    const provider = createTestDataProvider({
+      getTickerFinancials: async () => emptyFinancials(),
+      getDetailedPriceHistory: async () => [
+        { date: new Date("2024-10-15T16:00:00.000Z"), close: 100 },
+        { date: new Date("2024-10-16T16:00:00.000Z"), close: 110 },
+      ],
+    });
+    const spec: ChartSpec = {
+      version: CHART_SPEC_VERSION,
+      viewport: { range: "3M", resolution: "1d" },
+      panels: [{ id: "main" }],
+      series: [{
+        id: "price",
+        source: {
+          kind: "security",
+          instrument: { symbol: "TEST", exchange: "NASDAQ" },
+          fieldId: "market.close",
+        },
+        style: "line",
+        transform: "percent",
+        axis: "left",
+        panelId: "main",
+        interpolation: "none",
+      }],
+      studies: [{
+        id: "sma",
+        kind: "sma",
+        inputSeriesIds: ["price"],
+        parameters: { period: 2 },
+        panelId: "main",
+        axis: "left",
+      }],
+    };
+
+    const result = await resolveChartSpecData(
+      spec,
+      {
+        dataProvider: provider,
+        now: new Date("2025-04-01T00:00:00.000Z"),
+        loadFredSeries: async () => fredLoad(),
+      },
+      new ChartResolveCache(),
+      {
+        requestViewport: {
+          start: new Date("2024-10-10T00:00:00.000Z"),
+          end: new Date("2024-10-17T00:00:00.000Z"),
+        },
+      },
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(result.bufferedSeries?.find((series) => series.id === "price")?.points.map((point) => point.value))
+      .toEqual([0, 10]);
+    expect(result.bufferedSeries?.find((series) => series.id === "sma")?.points.map((point) => point.value))
+      .toEqual([5]);
   });
 
   test("resolves unrelated price, filed fundamental, and economic series on one chart", async () => {
@@ -886,6 +948,7 @@ describe("resolveChartSpecData", () => {
     expect(result.series[0]?.points.map((point) => point.value)).toEqual([15, 25]);
     expect(result.legendSeries?.find((series) => series.id === "price")?.timeBasis)
       .toMatchObject({ kind: "market", timeZone: "America/New_York" });
+    expect(result.timelineSeries?.map((series) => series.id)).toEqual(["price"]);
     expect(result.series[0]?.timeBasis)
       .toMatchObject({ kind: "market", timeZone: "America/New_York" });
   });
