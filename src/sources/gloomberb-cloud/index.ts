@@ -22,11 +22,14 @@ import {
   type CloudCorporateActionsPayload,
   type CloudHoldersPayload,
   type CloudMarketResponse,
+  type CloudPricePointPayload,
 } from "../../api-client";
 import type { NewsArticle, NewsQuery } from "../../types/news-source";
 import { resolvePriceHistoryCurrencyUnit } from "../../utils/currency-units";
 import { canonicalTickerKey } from "../../utils/exchanges";
+import { normalizePriceHistory } from "../../utils/price-history";
 import { createProviderMiss } from "../provider-errors";
+import { hasMalformedCloudIntradayHistory } from "./history-quality";
 import {
   cloudNewsParams,
   mapCloudNewsArticle,
@@ -81,6 +84,40 @@ async function withCloudFallback<T>(load: () => Promise<T>, message: string): Pr
 
 function isStaleCloudResponse(response: CloudMarketResponse<unknown>): boolean {
   return response.stale === true || response.providerMeta?.stale === true;
+}
+
+function mapCloudPriceHistory(
+  response: CloudMarketResponse<CloudPricePointPayload[]>,
+  ticker: string,
+  exchange: string,
+  interval: string,
+): PricePoint[] {
+  if (isStaleCloudResponse(response)) {
+    throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
+  }
+  const { divisor } = resolvePriceHistoryCurrencyUnit(
+    response.currency ?? response.providerMeta?.currency,
+    exchange,
+  );
+  const points = normalizePriceHistory(
+    unwrapRequiredCloudResponse(
+      response,
+      `Cloud chart data is unavailable for ${ticker}`,
+    ).map((point) => mapPricePoint(point, divisor, exchange)),
+  );
+  const upstream = (
+    response.providerMeta?.provider
+    ?? response.providerMeta?.upstream
+    ?? ""
+  ).trim().toLowerCase();
+  if (
+    /(min|h)$/i.test(interval)
+    && upstream !== "yahoo"
+    && hasMalformedCloudIntradayHistory(points)
+  ) {
+    throw createProviderMiss(`Cloud chart data failed OHLC validation for ${ticker}`);
+  }
+  return points;
 }
 
 function quoteTargetKey(symbol: string, exchange?: string): string {
@@ -269,12 +306,7 @@ export class GloomberbCloudProvider implements AssetDataProvider {
       () => apiClient.getCloudHistory(ticker, exchange, request),
       `Cloud chart data is unavailable for ${ticker}`,
     );
-    if (isStaleCloudResponse(response)) {
-      throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
-    }
-    const { divisor } = resolvePriceHistoryCurrencyUnit(response.currency ?? response.providerMeta?.currency, exchange);
-    return unwrapRequiredCloudResponse(response, `Cloud chart data is unavailable for ${ticker}`)
-      .map((point) => mapPricePoint(point, divisor, exchange));
+    return mapCloudPriceHistory(response, ticker, exchange, request.interval);
   }
 
   async getPriceHistoryForResolution(
@@ -297,12 +329,7 @@ export class GloomberbCloudProvider implements AssetDataProvider {
       }),
       `Cloud chart data is unavailable for ${ticker}`,
     );
-    if (isStaleCloudResponse(response)) {
-      throw createProviderMiss(`Cloud chart data is stale for ${ticker}`);
-    }
-    const { divisor } = resolvePriceHistoryCurrencyUnit(response.currency ?? response.providerMeta?.currency, exchange);
-    return unwrapRequiredCloudResponse(response, `Cloud chart data is unavailable for ${ticker}`)
-      .map((point) => mapPricePoint(point, divisor, exchange));
+    return mapCloudPriceHistory(response, ticker, exchange, interval);
   }
 
   async getDetailedPriceHistory(
@@ -324,12 +351,7 @@ export class GloomberbCloudProvider implements AssetDataProvider {
       }),
       `Cloud detailed chart history is unavailable for ${ticker}`,
     );
-    if (isStaleCloudResponse(response)) {
-      throw createProviderMiss(`Cloud detailed chart history is stale for ${ticker}`);
-    }
-    const { divisor } = resolvePriceHistoryCurrencyUnit(response.currency ?? response.providerMeta?.currency, exchange);
-    return unwrapRequiredCloudResponse(response, `Cloud detailed chart history is unavailable for ${ticker}`)
-      .map((point) => mapPricePoint(point, divisor, exchange));
+    return mapCloudPriceHistory(response, ticker, exchange, interval);
   }
 
   async getOptionsChain(ticker: string, exchange?: string, expirationDate?: number, _context?: MarketDataRequestContext): Promise<OptionsChain> {

@@ -122,6 +122,24 @@ function instrumentLabel(spec: Extract<ChartSeriesSpec["source"], { kind: "secur
   return publicTickerKey(spec.instrument.symbol, spec.instrument.exchange);
 }
 
+function withQuoteExchange(
+  source: Extract<ChartSeriesSpec["source"], { kind: "security" }>,
+  ...quotes: Array<Quote | undefined>
+): Extract<ChartSeriesSpec["source"], { kind: "security" }> {
+  if (source.instrument.exchange?.trim()) return source;
+  const exchange = quotes
+    .map((quote) => quote?.listingExchangeName?.trim() || quote?.exchangeName?.trim())
+    .find((value): value is string => !!value);
+  if (!exchange) return source;
+  return {
+    ...source,
+    instrument: {
+      ...source.instrument,
+      exchange,
+    },
+  };
+}
+
 function finiteDate(value: string | Date | undefined): Date | null {
   if (!value) return null;
   const date = value instanceof Date ? new Date(value) : new Date(value);
@@ -577,6 +595,18 @@ export async function resolveChartSpecData(
     }
     return pending;
   };
+  const sourceWithResolvedExchange = (
+    source: Extract<ChartSeriesSpec["source"], { kind: "security" }>,
+    financials: TickerFinancials | null,
+  ) => {
+    const quoteOverride = sources.quoteOverrides?.get(chartQuoteOverrideKeyForSource(source));
+    return withQuoteExchange(
+      source,
+      latestQuote(financials?.quote, quoteOverride),
+      financials?.quote,
+      quoteOverride,
+    );
+  };
 
   const runtimeBounds = spec.viewport.resolution === "auto"
     ? runtimeAutoBounds(options)
@@ -588,9 +618,16 @@ export async function resolveChartSpecData(
       ? [[instrumentKey(entry.source), entry.source] as const]
       : []
   ))).values()];
+  const resolutionSupportSources = runtimeBounds
+    ? await Promise.all(activeMarketSources.map(async (source) => (
+        source.instrument.exchange?.trim()
+          ? source
+          : sourceWithResolvedExchange(source, await loadFinancials(source))
+      )))
+    : activeMarketSources;
   const sharedSupport = runtimeBounds && activeMarketSources.length > 0
     ? intersectChartResolutionSupport(await Promise.all(
-        activeMarketSources.map((source) => loadResolutionSupport(source)),
+        resolutionSupportSources.map((source) => loadResolutionSupport(source)),
       ))
     : [];
   const initialResolution = requestResolution(
@@ -676,13 +713,22 @@ export async function resolveChartSpecData(
       const marketField = isMarketFieldId(source.fieldId);
       const quoteDerivedValuation = valuationSeriesUsesLiveQuote(source.fieldId);
       const needsHistory = marketField || quoteDerivedValuation;
-      const [financials, history] = await Promise.all([
-        loadFinancials(source),
-        needsHistory ? loadHistory(source, quoteDerivedValuation) : Promise.resolve(null),
-      ]);
       const quoteOverride = marketField || quoteDerivedValuation
         ? sources.quoteOverrides?.get(chartQuoteOverrideKeyForSource(source))
         : undefined;
+      const financialsPromise = loadFinancials(source);
+      let financials: TickerFinancials | null;
+      let history: TickerFinancials["priceHistory"] | null;
+      if (needsHistory && !source.instrument.exchange?.trim()) {
+        financials = await financialsPromise;
+        const historySource = sourceWithResolvedExchange(source, financials);
+        history = await loadHistory(historySource, quoteDerivedValuation);
+      } else {
+        [financials, history] = await Promise.all([
+          financialsPromise,
+          needsHistory ? loadHistory(source, quoteDerivedValuation) : Promise.resolve(null),
+        ]);
+      }
       const liveBarResolution = isOhlcSeriesStyle(seriesSpec.style) ? initialResolution : undefined;
       const merged = history
         ? mergeHistory(financials, history, quoteOverride, referenceNow.getTime(), liveBarResolution)
