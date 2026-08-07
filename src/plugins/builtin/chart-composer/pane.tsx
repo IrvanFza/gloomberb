@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Box, Text } from "../../../ui";
+import { Box, Text, useUiHost } from "../../../ui";
 import {
   ChoiceDialog,
   Tabs,
@@ -13,7 +13,7 @@ import {
 import { CompositeChart } from "../../../components/chart/composite";
 import type { PaneProps, TickerResearchTabProps } from "../../../types/plugin";
 import type { ChartResolution, TimeRange } from "../../../components/chart/core/types";
-import type { ChartSpec, SeriesStyle } from "../../../time-series/types";
+import type { ChartSpec, ResolvedSeries, SeriesStyle } from "../../../time-series/types";
 import { getSupportedChartResolutionsForViewport } from "../../../time-series/resolution";
 import { useResolvedChartSpec } from "../../../time-series/hooks";
 import { useShortcut } from "../../../react/input";
@@ -89,6 +89,8 @@ interface ChartComposerSurfaceProps {
   onCapture?: (capturing: boolean) => void;
 }
 
+const QUICK_ADD_CAPTURE = "quick-add";
+
 function isPriceStudyTarget(spec: ChartSpec): boolean {
   return spec.series.some((series) => (
     series.source.kind === "security"
@@ -107,6 +109,7 @@ function ChartComposerSurface({
 }: ChartComposerSurfaceProps) {
   const dialog = useDialog();
   const dispatch = useAppDispatch();
+  const isDesktopWeb = useUiHost().kind === "desktop-web";
   const paneId = usePaneInstanceId();
   const liveStreaming = useLiveStreamingSetting();
   const dialogOpen = useDialogState((state) => state.isOpen);
@@ -181,14 +184,39 @@ function ChartComposerSurface({
   const selectedPairStudies = getSelectedPairStudies(spec);
   const inlineStyleTarget = useMemo(() => getChartInlineStyleTarget(spec), [spec]);
   const styles = useMemo(() => getChartInlineStyles(spec), [spec]);
-  const styleTabs = useMemo(
-    () => styles.map((value) => ({ label: value.toUpperCase(), value })),
-    [styles],
-  );
   const inlineStyle = inlineStyleTarget?.style ?? "line";
   const inlineStyleLabel = inlineStyleTarget ? chartSeriesLabel(inlineStyleTarget) : "";
   const viewport = resolution.viewport;
   const baseSeriesIds = useMemo(() => new Set(spec.series.map((series) => series.id)), [spec.series]);
+  // Hidden series are never loaded, so the resolver has nothing to report for
+  // them. Without a placeholder they vanish from the legend entirely and the
+  // only way back is the series dialog.
+  const legendSeries = useMemo(() => {
+    const resolved = resolution.legendSeries ?? [];
+    const resolvedIds = new Set(resolved.map((entry) => entry.id));
+    const missing = spec.series.filter((entry) => !resolvedIds.has(entry.id));
+    if (missing.length === 0) return resolution.legendSeries;
+    const bySpecOrder = new Map(spec.series.map((entry, index) => [entry.id, index] as const));
+    return [
+      ...resolved,
+      ...missing.map((entry): ResolvedSeries => ({
+        id: entry.id,
+        label: chartSeriesLabel(entry),
+        color: entry.color ?? colors.textDim,
+        unit: "",
+        unitGroup: "unknown",
+        nativeFrequency: "daily",
+        dataShape: "scalar",
+        style: entry.style,
+        transform: entry.transform,
+        axis: entry.axis === "right" ? "right" : "left",
+        panelId: entry.panelId,
+        interpolation: entry.interpolation,
+        hidden: true,
+        points: [],
+      })),
+    ].sort((a, b) => (bySpecOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (bySpecOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+  }, [resolution.legendSeries, spec.series]);
   const plottedSeries = useMemo(
     () => projectVisibleChartSeries(
       spec,
@@ -198,6 +226,8 @@ function ChartComposerSurface({
     [resolution.bufferedSeries, resolution.legendSeries, resolution.series, spec],
   );
   const [interactionCaptured, setInteractionCapturedState] = useState(false);
+  // Typing in quick-add must not freeze the plot: it only takes the keyboard.
+  const [modalCaptured, setModalCaptured] = useState(false);
   const [quickAddWidth, setQuickAddWidth] = useState(14);
   const interactionCaptureRef = useRef(false);
   const interactionCaptureSourcesRef = useRef(new Set<string>());
@@ -210,6 +240,7 @@ function ChartComposerSurface({
     if (captured) sources.add(source);
     else sources.delete(source);
     const next = sources.size > 0;
+    setModalCaptured([...sources].some((entry) => entry !== QUICK_ADD_CAPTURE));
     if (interactionCaptureRef.current === next) return;
     interactionCaptureRef.current = next;
     setInteractionCapturedState(next);
@@ -224,6 +255,8 @@ function ChartComposerSurface({
     [setInteractionCaptured],
   );
   const surfaceInteractive = !dialogOpen && !interactionCaptured;
+  /** The plot keeps its pointer unless something modal is actually covering it. */
+  const surfacePointerInteractive = !dialogOpen && !modalCaptured;
   const shortcutActive = focused && surfaceInteractive;
   const activatePane = useCallback(() => {
     if (!focused) dispatch({ type: "FOCUS_PANE", paneId });
@@ -446,7 +479,7 @@ function ChartComposerSurface({
     [baseSeriesIds, spec],
   );
   const handleQuickAddActiveChange = useCallback(
-    (active: boolean) => setInteractionCaptured("quick-add", active),
+    (active: boolean) => setInteractionCaptured(QUICK_ADD_CAPTURE, active),
     [setInteractionCaptured],
   );
   const openIndicators = useCallback((event?: PaneFooterPressEvent) => {
@@ -551,7 +584,15 @@ function ChartComposerSurface({
   return (
     <Box flexDirection="column" width={width} height={height} backgroundColor={colors.panel}>
       <Box flexDirection="row" height={1} paddingX={1} gap={0} overflow="hidden">
-        <Box flexShrink={0} height={1} maxWidth={52} overflow="hidden">
+        <Box
+          flexShrink={0}
+          height={1}
+          maxWidth={52}
+          overflow="hidden"
+          // Desktop tabs are laid out in pixels, so a cell budget clips them
+          // while the row still has room to spare.
+          style={isDesktopWeb ? { maxWidth: "none", width: "auto" } : undefined}
+        >
           <Tabs
             tabs={RANGE_TABS}
             activeValue={spec.viewport.dateWindow ? null : spec.viewport.range}
@@ -571,6 +612,7 @@ function ChartComposerSurface({
           width={resolutionTabsWidth}
           height={1}
           overflow="hidden"
+          style={isDesktopWeb ? { width: "auto", flexShrink: 0 } : undefined}
           data-gloom-role="chart-resolution-control"
         >
           <Tabs
@@ -584,29 +626,6 @@ function ChartComposerSurface({
             keyboardNavigation={false}
           />
         </Box>
-        {width >= 132 && inlineStyleTarget && (
-          <Box
-            flexDirection="row"
-            flexShrink={0}
-            maxWidth={64}
-            height={1}
-            overflow="hidden"
-            data-gloom-role="chart-inline-style"
-            data-gloom-label={`${inlineStyleLabel} style`}
-          >
-            <Text fg={colors.textDim}>{`${inlineStyleLabel}: `}</Text>
-            <Tabs
-              tabs={styleTabs}
-              activeValue={inlineStyle}
-              onSelect={(value) => setInlineStyle(value as SeriesStyle)}
-              compact
-              dense
-              variant="bare"
-              focused={focused}
-              keyboardNavigation={false}
-            />
-          </Box>
-        )}
       </Box>
       <MultiSelectDialogButton
         ref={indicatorsDialogRef}
@@ -640,7 +659,7 @@ function ChartComposerSurface({
       <Box flexGrow={1} minHeight={4}>
         <CompositeChart
           series={plottedSeries}
-          legendSeries={resolution.legendSeries}
+          legendSeries={legendSeries}
           timelineSeries={resolution.timelineSeries}
           panels={spec.panels}
           viewport={viewport}
@@ -648,7 +667,7 @@ function ChartComposerSurface({
           width={Math.max(1, width)}
           height={Math.max(4, height - 1)}
           focused={focused}
-          interactive={surfaceInteractive}
+          interactive={surfacePointerInteractive}
           allowHistoricalBackfill
           showLatestChangePercent={!spec.viewport.dateWindow && spec.viewport.range === "1D"}
           onViewportChange={handleChartViewportChange}

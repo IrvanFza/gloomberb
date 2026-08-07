@@ -82,6 +82,8 @@ function pointerEvent(
   localY: number,
   options: {
     ctrl?: boolean;
+    shift?: boolean;
+    alt?: boolean;
     scroll?: { direction: "up" | "down" | "left" | "right"; delta: number };
   } = {},
 ) {
@@ -89,14 +91,18 @@ function pointerEvent(
   return {
     x: (node.x as number) + localX,
     y: (node.y as number) + localY,
-    modifiers: { shift: false, alt: false, ctrl: options.ctrl === true },
+    modifiers: {
+      shift: options.shift === true,
+      alt: options.alt === true,
+      ctrl: options.ctrl === true,
+    },
     scroll: options.scroll,
     preventDefault() {},
     stopPropagation() {},
   };
 }
 
-function keyEvent(name: string): KeyEventLike {
+function keyEvent(name: string, shift = false): KeyEventLike {
   let defaultPrevented = false;
   let propagationStopped = false;
   return {
@@ -104,7 +110,7 @@ function keyEvent(name: string): KeyEventLike {
     name,
     sequence: name,
     ctrl: false,
-    shift: false,
+    shift,
     alt: false,
     meta: false,
     get defaultPrevented() {
@@ -341,7 +347,7 @@ describe("CompositeChart", () => {
     expect(largestGap).toBeLessThan(10);
   });
 
-  test("shows an explicit legend toggle action on hover", async () => {
+  test("toggles a series from its legend entry", async () => {
     const toggled: string[] = [];
     testSetup = await testRender(
       <CompositeChart
@@ -360,16 +366,8 @@ describe("CompositeChart", () => {
     await act(async () => {
       await testSetup!.renderOnce();
     });
-    const firstLegendLine = testSetup.captureCharFrame().split("\n")[0]!;
-    const priceColumn = firstLegendLine.indexOf("ACME Price");
+    const priceColumn = testSetup.captureCharFrame().split("\n")[0]!.indexOf("ACME Price");
     expect(priceColumn).toBeGreaterThan(0);
-
-    await act(async () => {
-      await testSetup!.mockMouse.moveTo(2, 5);
-      await testSetup!.mockMouse.moveTo(priceColumn, 0);
-      await testSetup!.renderOnce();
-    });
-    expect(testSetup.captureCharFrame().split("\n")[0]).toContain("Hide");
 
     await act(async () => {
       await testSetup!.mockMouse.click(priceColumn, 0);
@@ -510,7 +508,8 @@ describe("CompositeChart", () => {
 
     await act(async () => chartShortcut?.(keyEvent("escape")));
     await act(async () => testSetup!.renderOnce());
-    expect(testSetup.captureCharFrame()).toContain("Latest");
+    // Escape drops the cursor, so its date leaves the time axis with it.
+    expect(testSetup.captureCharFrame()).not.toContain("2025-01-02");
   });
 
   test("does not emit the same snapped cursor timestamp twice", async () => {
@@ -933,6 +932,304 @@ describe("CompositeChart", () => {
     expect(testSetup.captureCharFrame()).toContain("Jan 3");
   });
 
+  test("zooms to a shift-drag selection instead of panning", async () => {
+    const viewportChanges: Array<{ start: string; end: string } | null> = [];
+    testSetup = await testRender(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={60}
+          height={12}
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+          onViewportChange={(next) => {
+            viewportChanges.push(next
+              ? { start: next.start.toISOString(), end: next.end.toISOString() }
+              : null);
+          }}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(10, 3, { shift: true }));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 3, { shift: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+    // The selection must not pan the way an unmodified drag would, and the
+    // range has to read as text for renderers that cannot draw the band.
+    expect(viewportChanges).toHaveLength(0);
+    expect(testSetup.captureCharFrame()).toContain("→");
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseUp(pointerEvent(30, 3, { shift: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+
+    const zoomed = viewportChanges.at(-1);
+    expect(zoomed).toBeTruthy();
+    expect(new Date(zoomed!.start).getTime()).toBeGreaterThan(Date.parse("2025-01-01T00:00:00.000Z"));
+    expect(new Date(zoomed!.end).getTime()).toBeLessThan(Date.parse("2025-01-09T00:00:00.000Z"));
+  });
+
+  test("reports an alt-drag measurement without moving the viewport", async () => {
+    const viewportChanges: Array<{ start: string; end: string } | null> = [];
+    testSetup = await testRender(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={60}
+          height={12}
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+          onViewportChange={(next) => {
+            viewportChanges.push(next
+              ? { start: next.start.toISOString(), end: next.end.toISOString() }
+              : null);
+          }}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6, { alt: true }));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(34, 1, { alt: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+
+    const measuringFrame = testSetup.captureCharFrame();
+    // The readout sits in the middle of the box it measures, not in the legend.
+    expect(measuringFrame).toContain("Δ");
+    expect(measuringFrame).toContain("bars");
+    expect(measuringFrame.split("\n")[0]).not.toContain("Δ");
+    expect(viewportChanges).toHaveLength(0);
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseUp(pointerEvent(34, 1, { alt: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).not.toContain("Δ");
+    expect(viewportChanges).toHaveLength(0);
+  });
+
+  test("arms a measurement from the keyboard when a modifier drag cannot reach the app", async () => {
+    testSetup = await testRender(
+      <InputHostProvider host={chartInputHost}>
+        <CaptureChartSurfaceProvider>
+          <CompositeChart
+            width={60}
+            height={12}
+            focused
+            interactive
+            series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+            panels={[{ id: "main" }]}
+          />
+        </CaptureChartSurfaceProvider>
+      </InputHostProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => chartShortcut?.(keyEvent("m", true)));
+    await act(async () => testSetup!.renderOnce());
+
+    // No modifier on the drag: the armed tool is what makes it a measurement.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(34, 1));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).toContain("Δ");
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseUp(pointerEvent(34, 1));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).not.toContain("Δ");
+
+    // Sticky: the tool still owns the next drag until it is dismissed.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 2));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).toContain("Δ");
+  });
+
+  test("arms and disarms a chart tool from the toolbar", async () => {
+    testSetup = await testRender(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={60}
+          height={12}
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    // Pressing the ruler icon has to arm the tool for an unmodified drag.
+    await act(async () => {
+      await testSetup!.mockMouse.moveTo(11, 1);
+      await testSetup!.mockMouse.click(11, 1);
+    });
+    await act(async () => testSetup!.renderOnce());
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 2));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).toContain("Δ");
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseUp(pointerEvent(30, 2));
+      await testSetup!.mockMouse.click(11, 1);
+    });
+    await act(async () => testSetup!.renderOnce());
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 2));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).not.toContain("Δ");
+  });
+
+  test("draws a line, then grabs its end to reshape it", async () => {
+    testSetup = await testRender(
+      <InputHostProvider host={chartInputHost}>
+        <CaptureChartSurfaceProvider>
+          <CompositeChart
+            width={60}
+            height={12}
+            focused
+            interactive
+            series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+            panels={[{ id: "main" }]}
+          />
+        </CaptureChartSurfaceProvider>
+      </InputHostProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+    await act(async () => chartShortcut?.(keyEvent("d", true)));
+    await act(async () => testSetup!.renderOnce());
+    const base = capturedSurfaceProps!.bitmaps?.[0] as { pixels: Uint8Array } | undefined;
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 2));
+      capturedSurfaceProps!.onMouseUp(pointerEvent(30, 2));
+    });
+    await act(async () => testSetup!.renderOnce());
+    const drawn = capturedSurfaceProps!.bitmaps?.[0] as { pixels: Uint8Array } | undefined;
+    expect(Buffer.from(drawn!.pixels).equals(Buffer.from(base!.pixels))).toBe(false);
+
+    // Grabbing the endpoint that was just dropped has to reshape, not redraw.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(14, 8));
+      capturedSurfaceProps!.onMouseUp(pointerEvent(14, 8));
+    });
+    await act(async () => testSetup!.renderOnce());
+    const reshaped = capturedSurfaceProps!.bitmaps?.[0] as { pixels: Uint8Array } | undefined;
+    expect(reshaped).toBeTruthy();
+    expect(Buffer.from(reshaped!.pixels).equals(Buffer.from(drawn!.pixels))).toBe(false);
+  });
+
+  test("disarms a chart tool with escape", async () => {
+    testSetup = await testRender(
+      <InputHostProvider host={chartInputHost}>
+        <CaptureChartSurfaceProvider>
+          <CompositeChart
+            width={60}
+            height={12}
+            focused
+            interactive
+            series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+            panels={[{ id: "main" }]}
+          />
+        </CaptureChartSurfaceProvider>
+      </InputHostProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => chartShortcut?.(keyEvent("z", true)));
+    await act(async () => chartShortcut?.(keyEvent("escape")));
+    await act(async () => testSetup!.renderOnce());
+
+    // Disarmed: an unmodified drag pans instead of selecting a range.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(30, 2));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).not.toContain("→");
+  });
+
+  test("keeps a measurement readable in a narrow pane", async () => {
+    testSetup = await testRender(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={28}
+          height={12}
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 30, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(2, 6, { alt: true }));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(14, 1, { alt: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+
+    // Too narrow for the whole summary, but the change still has to be visible.
+    expect(testSetup.captureCharFrame()).toContain("Δ");
+  });
+
+  test("ends a tool drag whose release landed on another pane", async () => {
+    testSetup = await testRender(
+      <CaptureChartSurfaceProvider>
+        <CompositeChart
+          width={60}
+          height={12}
+          interactive
+          series={[series("price", "main", "left", "USD", [100, 101, 102, 103, 104, 105, 106, 107, 108])]}
+          panels={[{ id: "main" }]}
+        />
+      </CaptureChartSurfaceProvider>,
+      { width: 62, height: 14 },
+    );
+    await act(async () => testSetup!.renderOnce());
+
+    await act(async () => {
+      capturedSurfaceProps!.onMouseDown(pointerEvent(8, 6, { alt: true }));
+      capturedSurfaceProps!.onMouseDrag(pointerEvent(34, 1, { alt: true }));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).toContain("Δ");
+
+    // No mouse-up arrives: the pointer was released over a floating pane. The
+    // next plain move only happens with the button already up.
+    await act(async () => {
+      capturedSurfaceProps!.onMouseMove(pointerEvent(20, 4));
+    });
+    await act(async () => testSetup!.renderOnce());
+    expect(testSetup.captureCharFrame()).not.toContain("Δ");
+  });
+
   test("maps the pointer crosshair level through both axes and labels its date", async () => {
     testSetup = await testRender(
       <CaptureChartSurfaceProvider>
@@ -1216,7 +1513,8 @@ describe("CompositeChart", () => {
 
     const recoveredFrame = testSetup.captureCharFrame();
     expect(recoveredFrame).toContain("•");
-    expect(recoveredFrame).toContain("Jan 1");
+    expect(recoveredFrame).toContain("2025-01-01");
+    expect(recoveredFrame).toContain("Jan 9");
   });
 
   test("shows useful UTC times for an intraday shared cursor and time axis", async () => {
@@ -1245,7 +1543,7 @@ describe("CompositeChart", () => {
     });
 
     const frame = testSetup.captureCharFrame();
-    expect(frame).toContain("2025-01-02 12:05 UTC");
+    expect(frame).toContain("12:05 UTC");
     expect(frame).toContain("09:30 UTC");
     expect(frame).toContain("16:00 UTC");
   });

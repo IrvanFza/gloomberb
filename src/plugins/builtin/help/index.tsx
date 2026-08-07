@@ -153,6 +153,40 @@ function HelpPane({ focused, width, height }: PaneProps) {
               />
             </HelpSection>
 
+            <HelpSection title="Charts">
+              <ShortcutRow
+                badges={["Drag", "Scroll"]}
+                description="Pan the chart through time."
+              />
+              <ShortcutRow
+                badges={["Shift+Z", "Shift+Drag"]}
+                description="Pick the zoom tool, then drag a time range to zoom into."
+              />
+              <ShortcutRow
+                badges={["Shift+M", "Alt+Drag"]}
+                description="Pick the ruler, then drag to measure change, percent, bars, and elapsed time."
+              />
+              <ShortcutRow
+                badges={["Shift+D", "Shift+P"]}
+                description="Draw a trend line or a freehand shape. Grab a line's end to reshape it, drag its middle to move it."
+              />
+              <ShortcutRow
+                badges={["c", "Backspace"]}
+                description="Cycle the drawing colour, or delete the selected drawing."
+              />
+              <ShortcutRow
+                badges={["Ctrl+Scroll"]}
+                description="Zoom around the pointer."
+              />
+              <ShortcutRow
+                badges={["+/-", "0"]}
+                description="Zoom the focused chart in or out, or reset it."
+              />
+              <Text fg={colors.textDim} wrapText>
+                {t("The tool icons sit over the top-left corner of the chart. Most terminals keep shift-drag and option-drag for their own text selection, so pick the tool there instead.")}
+              </Text>
+            </HelpSection>
+
             <HelpSection title="Global Keys">
               <ShortcutRow
                 badges={["Tab", "Shift+Tab"]}

@@ -11,11 +11,17 @@ export interface CompositeViewportRange {
 }
 
 export type CompositeChartInteraction =
+  | "arm-line"
+  | "arm-measure"
+  | "arm-pencil"
+  | "arm-zoom"
+  | "cycle-colour"
   | "clear-cursor"
   | "cursor-left"
   | "cursor-right"
   | "pan-left"
   | "pan-right"
+  | "delete-drawing"
   | "reset"
   | "zoom-in"
   | "zoom-out";
@@ -415,6 +421,16 @@ export function resolveCompositeChartInteraction(event: {
   const key = (name || sequence).toLowerCase();
   if (key === "left") return event.shift ? "pan-left" : "cursor-left";
   if (key === "right") return event.shift ? "pan-right" : "cursor-right";
+  // Terminals reserve shift-drag and option-drag for their own selection, so the
+  // pointer tools also need a keyboard path that always reaches the app. Without
+  // the kitty keyboard protocol a shifted letter arrives uppercase and unflagged.
+  const shifted = event.shift || name === name.toUpperCase() && name !== key;
+  if (shifted && key === "m") return "arm-measure";
+  if (shifted && key === "z") return "arm-zoom";
+  if (shifted && key === "d") return "arm-line";
+  if (shifted && key === "p") return "arm-pencil";
+  if (key === "backspace") return "delete-drawing";
+  if (key === "c" && !event.shift) return "cycle-colour";
   if (event.shift) return null;
   if (key === "a") return "pan-left";
   if (key === "d") return "pan-right";

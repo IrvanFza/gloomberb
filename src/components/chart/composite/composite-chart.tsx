@@ -31,6 +31,7 @@ import {
 import { StaticXAxisLabels } from "../static/chart/axis-overlays";
 import { PriceAxisLabels } from "../price-axis-labels";
 import {
+  compositeAxisTicks,
   formatCompositeAxisValue,
   formatCompositeCursorDate,
   formatCompositePointDetails,
@@ -54,6 +55,27 @@ import {
 import { buildCompositeColumnLayout, type CompositeColumnLayout } from "./column-layout";
 import { renderCompositePanelBitmap } from "./rasterizer";
 import {
+  buildChartToolVectors,
+  CHART_DRAWING_COLORS,
+  countMeasureBars,
+  drawChartToolOverlay,
+  resolveChartToolKind,
+  resolveMeasureAxisDomain,
+  resolveMeasureDirection,
+  hitTestDrawings,
+  isDrawingTool,
+  nextDrawingColor,
+  resolveDrawingFromDrag,
+  resolveZoomBoxRange,
+  shiftDrawing,
+  summarizeMeasure,
+  summarizeZoomSelection,
+  type ChartDrawing,
+  type ChartToolDrag,
+  type ChartToolKind,
+} from "./tools";
+import { unprojectCompositeTimestamp } from "./time-scale";
+import {
   allocateCompositePanelHeights,
   applyCompositeChartCursor,
   buildCompositeChartScene,
@@ -71,6 +93,7 @@ import {
   buildCompositeViewportTimeAxisLayout,
 } from "./time-axis";
 import type {
+  CompositeAxisDomain,
   CompositeChartColors,
   CompositeChartProps,
   CompositeChartScene,
@@ -267,6 +290,287 @@ function cursorAxisLabel(
   return value === null ? null : formatCompositeAxisValue(value, domain);
 }
 
+const MINIMUM_AXIS_LABEL_WIDTH = 3;
+
+/**
+ * Cells the gutter needs for its own labels. Ticks cover the axis itself, and a
+ * mid-domain sample covers the wider cursor readout that lands between them.
+ */
+function compositeAxisLabelWidth(domain: CompositeAxisDomain | undefined): number {
+  if (!domain) return 0;
+  const labels = compositeAxisTicks(domain).map((tick) => tick.label);
+  labels.push(formatCompositeAxisValue((domain.min + domain.max) / 2, domain));
+  return labels.reduce((widest, label) => Math.max(widest, [...label].length), 0);
+}
+
+
+const HAND_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M6.4 8V3.5a1.15 1.15 0 0 1 2.3 0V7m0-.6a1.15 1.15 0 0 1 2.3 0V8m0-.5a1.15 1.15 0 0 1 2.3 0v3.1c0 2.1-1.7 3.8-3.8 3.8H8.9c-1.2 0-2.3-.6-3-1.6L3.6 9.4a1.15 1.15 0 0 1 1.8-1.4L6.4 9.2" fill="none" stroke="#000" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const RULER_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect x="1.4" y="4.6" width="13.2" height="6.8" rx="1.4" fill="none" stroke="#000" stroke-width="1.4"/><path d="M5 4.6v2.6M8 4.6v3.6M11 4.6v2.6" stroke="#000" stroke-width="1.3" stroke-linecap="round"/></svg>`;
+const PEN_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2.4 13.6 4 9.9 10.6 3.3a1.6 1.6 0 0 1 2.3 0l0 0a1.6 1.6 0 0 1 0 2.3L6.2 12 2.4 13.6Z" fill="none" stroke="#000" stroke-width="1.5" stroke-linejoin="round"/></svg>`;
+const LINE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M3.2 12.8 12.8 3.2" stroke="#000" stroke-width="1.6" stroke-linecap="round"/><circle cx="3.2" cy="12.8" r="2" fill="none" stroke="#000" stroke-width="1.4"/><circle cx="12.8" cy="3.2" r="2" fill="none" stroke="#000" stroke-width="1.4"/></svg>`;
+const MARQUEE_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M2.2 6V3.4a1.2 1.2 0 0 1 1.2-1.2H6M10 2.2h2.6a1.2 1.2 0 0 1 1.2 1.2V6M13.8 10v2.6a1.2 1.2 0 0 1-1.2 1.2H10M6 13.8H3.4a1.2 1.2 0 0 1-1.2-1.2V10" fill="none" stroke="#000" stroke-width="1.7" stroke-linecap="round"/></svg>`;
+
+const CHART_TOOLS: ReadonlyArray<{
+  /** null is the resting state: the pointer pans and nothing is armed. */
+  kind: ChartToolKind | null;
+  label: string;
+  shortcut: string;
+  hint: string;
+  glyph: string;
+  icon: string;
+}> = [
+  {
+    kind: null,
+    label: "Pan",
+    shortcut: "Esc",
+    hint: "Drag to move through time, the resting state of the pointer",
+    glyph: "\u2725",
+    icon: HAND_ICON,
+  },
+  {
+    kind: "measure",
+    label: "Ruler",
+    shortcut: "Shift+M",
+    hint: "Drag to measure change, percent, bars, and elapsed time",
+    glyph: "\u2194",
+    icon: RULER_ICON,
+  },
+  {
+    kind: "zoom",
+    label: "Zoom to range",
+    shortcut: "Shift+Z",
+    hint: "Drag to select a time range to zoom into",
+    glyph: "\u229e",
+    icon: MARQUEE_ICON,
+  },
+  {
+    kind: "line",
+    label: "Trend line",
+    shortcut: "Shift+D",
+    hint: "Drag a straight line, grab an end to reshape it, Backspace deletes",
+    glyph: "\u2571",
+    icon: LINE_ICON,
+  },
+  {
+    kind: "pencil",
+    label: "Freehand",
+    shortcut: "Shift+P",
+    hint: "Draw freehand, drag a shape to move it, Backspace deletes",
+    glyph: "\u223f",
+    icon: PEN_ICON,
+  },
+];
+
+interface ChartToolSpan {
+  startXRatio: number;
+  endXRatio: number;
+  color: string;
+}
+
+const ARMED_TOOL_BY_INTERACTION = {
+  "arm-measure": "measure",
+  "arm-zoom": "zoom",
+  "arm-line": "line",
+  "arm-pencil": "pencil",
+} as const satisfies Record<string, ChartToolKind>;
+
+const COMPOSITE_PANEL_ROLE = "composite-chart-panel";
+
+let nextDrawingSequence = 1;
+
+function nextDrawingId(): string {
+  return `drawing:${nextDrawingSequence++}`;
+}
+
+/** Icon cells plus the gap between chips. */
+const CHART_TOOLBAR_WIDTH = CHART_TOOLS.length * 3 + (CHART_TOOLS.length - 1);
+
+function ChartToolChip({
+  tool,
+  active,
+  isDesktopWeb,
+  onPress,
+}: {
+  tool: (typeof CHART_TOOLS)[number];
+  active: boolean;
+  isDesktopWeb: boolean;
+  onPress: () => void;
+}) {
+  const label = `${tool.label} (${tool.shortcut}). ${tool.hint}`;
+  const color = active ? themeColors.text : themeColors.textDim;
+  return (
+    <Box
+      flexDirection="row"
+      alignItems="center"
+      justifyContent="center"
+      width={3}
+      height={1}
+      flexShrink={0}
+      backgroundColor={active ? themeColors.selected : undefined}
+      hoverBackgroundColor={hoverBg()}
+      onMouseDown={(event: ChartMouseEvent) => {
+        consumeChartMouseEvent(event);
+        onPress();
+      }}
+      cursor="pointer"
+      data-gloom-interactive="true"
+      data-gloom-role="composite-chart-tool"
+      data-gloom-label={label}
+      data-active={active ? "true" : "false"}
+      title={isDesktopWeb ? label : undefined}
+      // Cells size the terminal strip; the desktop chip sizes to its icon.
+      style={isDesktopWeb ? { width: "auto", paddingInline: 4, borderRadius: 4 } : undefined}
+    >
+      {isDesktopWeb ? (
+        <Box
+          flexShrink={0}
+          style={{
+            width: 13,
+            height: 13,
+            backgroundColor: color,
+            maskImage: svgMaskUrl(tool.icon),
+            WebkitMaskImage: svgMaskUrl(tool.icon),
+            maskSize: "contain",
+            WebkitMaskSize: "contain",
+            maskRepeat: "no-repeat",
+            WebkitMaskRepeat: "no-repeat",
+            maskPosition: "center",
+            WebkitMaskPosition: "center",
+          }}
+        />
+      ) : (
+        <Text fg={color}>{tool.glyph}</Text>
+      )}
+    </Box>
+  );
+}
+
+
+/** Blurs a focused text field, the focus change a consumed mousedown prevents. */
+function releaseEditableFocus(event: ChartMouseEvent): void {
+  if (!event.target?.closest?.(`[data-gloom-role="${COMPOSITE_PANEL_ROLE}"]`)) return;
+  const active = (globalThis as {
+    document?: { activeElement?: { tagName?: string; blur?: () => void } };
+  }).document?.activeElement;
+  const tag = active?.tagName?.toUpperCase();
+  if (tag !== "INPUT" && tag !== "TEXTAREA") return;
+  active?.blur?.();
+}
+
+function svgMaskUrl(svg: string): string {
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
+
+function ChartColorSwatch({
+  color,
+  active,
+  isDesktopWeb,
+  onPress,
+}: {
+  color: string;
+  active: boolean;
+  isDesktopWeb: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Box
+      flexDirection="row"
+      alignItems="center"
+      justifyContent="center"
+      width={2}
+      height={1}
+      flexShrink={0}
+      backgroundColor={active ? themeColors.selected : undefined}
+      hoverBackgroundColor={hoverBg()}
+      onMouseDown={(event: ChartMouseEvent) => {
+        consumeChartMouseEvent(event);
+        onPress();
+      }}
+      cursor="pointer"
+      data-gloom-interactive="true"
+      data-gloom-role="composite-chart-color"
+      data-gloom-label={`Drawing colour ${color}`}
+      data-active={active ? "true" : "false"}
+      style={isDesktopWeb
+        ? {
+          width: 14,
+          height: 14,
+          borderRadius: 999,
+          backgroundColor: color,
+          border: `1.5px solid ${active ? themeColors.text : "transparent"}`,
+        }
+        : undefined}
+    >
+      {isDesktopWeb ? null : <Text fg={color}>{active ? "\u25c9" : "\u25cf"}</Text>}
+    </Box>
+  );
+}
+
+function ChartToolbar({
+  armedTool,
+  isDesktopWeb,
+  left,
+  top,
+  drawColor,
+  showColors,
+  onArmTool,
+  onPickColor,
+}: {
+  armedTool: ChartToolKind | null;
+  isDesktopWeb: boolean;
+  left: number;
+  top: number;
+  drawColor: string;
+  showColors: boolean;
+  onArmTool: (tool: ChartToolKind | null) => void;
+  onPickColor: (color: string) => void;
+}) {
+  return (
+    <Box
+      position="absolute"
+      left={left}
+      top={top}
+      height={1}
+      flexDirection="row"
+      gap={1}
+      zIndex={30}
+      backgroundColor={themeColors.bg}
+      style={isDesktopWeb
+        ? {
+          gap: 3,
+          padding: 3,
+          borderRadius: 7,
+          backgroundColor: `color-mix(in srgb, ${themeColors.bg} 78%, transparent)`,
+          backdropFilter: "blur(6px)",
+          width: "auto",
+          height: "auto",
+        }
+        : undefined}
+      data-gloom-role="composite-chart-toolbar"
+    >
+      {CHART_TOOLS.map((tool) => (
+        <ChartToolChip
+          key={tool.kind ?? "pan"}
+          tool={tool}
+          active={armedTool === tool.kind}
+          isDesktopWeb={isDesktopWeb}
+          onPress={() => onArmTool(tool.kind)}
+        />
+      ))}
+      {/* Colours only take space while something can use them. */}
+      {showColors ? CHART_DRAWING_COLORS.map((color) => (
+        <ChartColorSwatch
+          key={color}
+          color={color}
+          active={color === drawColor}
+          isDesktopWeb={isDesktopWeb}
+          onPress={() => onPickColor(color)}
+        />
+      )) : null}
+    </Box>
+  );
+}
+
 function resolveSeriesCursorYRatio(
   panel: CompositePanelScene,
   scene: CompositeChartScene,
@@ -293,10 +597,20 @@ interface CompositePanelSurfaceProps {
   colors: CompositeChartColors;
   interactive: boolean;
   viewport: CompositeViewportRange;
+  minimumViewportSpanMs: number;
+  armedTool: ChartToolKind | null;
+  drawings: readonly ChartDrawing[];
+  selectedDrawingId: string | null;
+  drawColor: string;
+  onDraw: (drawing: ChartDrawing) => void;
+  onEditDrawing: (id: string, update: (drawing: ChartDrawing) => ChartDrawing) => void;
+  onSelectDrawing: (id: string | null) => void;
   onActivate?: () => void;
   onCursorDateChange: (date: Date | null) => void;
   onPanViewport: (shiftRatio: number, fromViewport?: CompositeViewportRange) => void;
   onZoomViewport: (zoomFactor: number, anchorRatio: number) => void;
+  onSetViewport: (range: CompositeViewportRange) => void;
+  onToolSpanChange: (span: ChartToolSpan | null) => void;
 }
 
 function CompositePanelSurface({
@@ -309,13 +623,23 @@ function CompositePanelSurface({
   colors,
   interactive,
   viewport,
+  minimumViewportSpanMs,
+  armedTool,
+  drawings,
+  selectedDrawingId,
+  drawColor,
+  onDraw,
+  onEditDrawing,
+  onSelectDrawing,
   onActivate,
   onCursorDateChange,
   onPanViewport,
   onZoomViewport,
+  onSetViewport,
+  onToolSpanChange,
 }: CompositePanelSurfaceProps) {
   const isDesktopWeb = useUiHost().kind === "desktop-web";
-  const { cellHeightPx = 18 } = useUiCapabilities();
+  const { cellHeightPx = 18, cellWidthPx = 8 } = useUiCapabilities();
   const renderer = useNativeRenderer();
   const plotRef = useRef<BoxRenderable | null>(null);
   const [cursorYRatio, setCursorYRatio] = useState<number | null>(null);
@@ -326,10 +650,20 @@ function CompositePanelSurface({
   const activeCursorYRatio = scene.cursorXRatio === null
     ? null
     : cursorYRatio ?? seriesCursorYRatio;
-  const dragRef = useRef<{
-    startGlobalX: number;
-    startViewport: CompositeViewportRange;
-  } | null>(null);
+  const dragRef = useRef<
+    | { kind: "pan"; startGlobalX: number; startViewport: CompositeViewportRange }
+    | {
+      kind: "edit";
+      drawingId: string;
+      pointIndex: number | null;
+      lastXRatio: number;
+      lastYRatio: number;
+    }
+    | ChartToolDrag
+    | null
+  >(null);
+  const [toolDrag, setToolDrag] = useState<ChartToolDrag | null>(null);
+  const plotAspect = (plotWidth * cellWidthPx) / Math.max(panel.height * cellHeightPx, 1);
   const bitmapSize = useStaticChartBitmapSize(plotWidth, panel.height);
   const bitmap = useCompositePanelBitmap({ panel, bitmapSize, colors, isDesktopWeb });
   const columnLayout = useMemo(() => buildCompositeColumnLayout(panel), [panel]);
@@ -337,7 +671,121 @@ function CompositePanelSurface({
     () => resolvePanelCrosshair(panel, columnLayout, bitmap, scene.cursorXRatio, activeCursorYRatio, colors.crosshair),
     [activeCursorYRatio, bitmap, colors.crosshair, columnLayout, panel, scene.cursorXRatio],
   );
-  const bitmapLayers = useMemo(() => bitmap ? [bitmap] : null, [bitmap]);
+  const measureDomain = useMemo(() => resolveMeasureAxisDomain(panel), [panel]);
+  const toolReadout = useMemo(() => {
+    if (!toolDrag) return null;
+    if (toolDrag.kind === "zoom") {
+      return {
+        direction: "up" as const,
+        summary: summarizeZoomSelection(scene, toolDrag),
+        startValueLabel: null,
+        endValueLabel: null,
+      };
+    }
+    const startValue = measureDomain
+      ? unprojectCompositeValue(toolDrag.startYRatio, measureDomain)
+      : null;
+    const endValue = measureDomain
+      ? unprojectCompositeValue(toolDrag.endYRatio, measureDomain)
+      : null;
+    const startTime = unprojectCompositeTimestamp(scene.timeScale, toolDrag.startXRatio);
+    const endTime = unprojectCompositeTimestamp(scene.timeScale, toolDrag.endXRatio);
+    return {
+      direction: resolveMeasureDirection(startValue, endValue),
+      summary: summarizeMeasure({
+        startValue,
+        endValue,
+        startTime,
+        endTime,
+        bars: countMeasureBars(scene.dates, startTime, endTime),
+        domain: measureDomain,
+      }),
+      startValueLabel: measureDomain && startValue !== null
+        ? formatCompositeAxisValue(startValue, measureDomain)
+        : null,
+      endValueLabel: measureDomain && endValue !== null
+        ? formatCompositeAxisValue(endValue, measureDomain)
+        : null,
+    };
+  }, [measureDomain, scene, toolDrag]);
+  const toolSummary = toolReadout?.summary ?? null;
+  const toolSpan = useMemo(() => {
+    if (!toolDrag || !toolSummary) return null;
+    return {
+      startXRatio: toolDrag.startXRatio,
+      endXRatio: toolDrag.endXRatio,
+      color: toolDrag.kind === "zoom"
+        ? colors.crosshair
+        : toolReadout?.direction === "down" ? colors.negative : themeColors.positive,
+    };
+  }, [colors.crosshair, colors.negative, toolDrag, toolReadout?.direction, toolSummary]);
+  useEffect(() => {
+    onToolSpanChange(toolSpan);
+  }, [onToolSpanChange, toolSpan]);
+  const panelDrawings = useMemo(
+    () => drawings.filter((drawing) => drawing.panelId === panel.id),
+    [drawings, panel.id],
+  );
+  const bitmapLayers = useMemo(() => {
+    if (!bitmap) return null;
+    // The desktop composites overlays as vectors, so the plot raster stays put
+    // while a tool drags. Copying and reblending it per frame is what made the
+    // ruler feel heavy.
+    if (isDesktopWeb || (!toolDrag && panelDrawings.length === 0)) return [bitmap];
+    return [drawChartToolOverlay(
+      bitmap,
+      toolDrag,
+      {
+        positive: themeColors.positive,
+        negative: colors.negative,
+        zoom: colors.crosshair,
+        draw: drawColor,
+      },
+      toolReadout?.direction ?? "up",
+      { scene, panel, items: panelDrawings, selectedId: selectedDrawingId },
+    )];
+  }, [
+    bitmap,
+    colors.crosshair,
+    colors.negative,
+    drawColor,
+    isDesktopWeb,
+    panel,
+    panelDrawings,
+    scene,
+    selectedDrawingId,
+    toolDrag,
+    toolReadout?.direction,
+  ]);
+  const vectors = useMemo<ChartSurfaceProps["vectors"]>(() => {
+    if (!isDesktopWeb) return null;
+    const shapes = buildChartToolVectors({
+      scene,
+      panel,
+      drawings: panelDrawings,
+      selectedId: selectedDrawingId,
+      drag: toolDrag,
+      colors: {
+        positive: themeColors.positive,
+        negative: colors.negative,
+        zoom: colors.crosshair,
+        draw: drawColor,
+      },
+      direction: toolReadout?.direction ?? "up",
+    });
+    return shapes.length > 0 ? shapes : null;
+  }, [
+    colors.crosshair,
+    colors.negative,
+    drawColor,
+    isDesktopWeb,
+    panel,
+    panelDrawings,
+    scene,
+    selectedDrawingId,
+    toolDrag,
+    toolReadout?.direction,
+  ]);
   const textLines = useMemo(
     () => isDesktopWeb
       ? []
@@ -364,7 +812,66 @@ function CompositePanelSurface({
     : activeCursorYRatio * Math.max(panel.height * cellHeightPx - 1, 0);
   const leftCursorLabel = cursorAxisLabel(panel, "left", activeCursorYRatio);
   const rightCursorLabel = cursorAxisLabel(panel, "right", activeCursorYRatio);
+  const measureReadout = useMemo(() => {
+    if (!toolDrag || !toolReadout?.summary) return null;
+    const text = toolReadout.summary;
+    const centreX = (toolDrag.startXRatio + toolDrag.endXRatio) / 2;
+    const centreY = toolDrag.kind === "zoom"
+      ? 0.5
+      : (toolDrag.startYRatio + toolDrag.endYRatio) / 2;
+    const width = Math.min([...text].length, plotWidth);
+    return {
+      text,
+      width,
+      color: toolDrag.kind === "zoom"
+        ? colors.text
+        : toolReadout.direction === "down" ? colors.negative : themeColors.positive,
+      left: leftAxisWidth + (leftAxisWidth ? axisGap : 0)
+        + Math.max(0, Math.min(plotWidth - width, Math.round(centreX * plotWidth - width / 2))),
+      top: Math.max(0, Math.min(panel.height - 1, Math.round(centreY * (panel.height - 1)))),
+    };
+  }, [
+    axisGap,
+    colors.negative,
+    colors.text,
+    leftAxisWidth,
+    panel.height,
+    plotWidth,
+    toolDrag,
+    toolReadout,
+  ]);
+  const axisMarkers = useMemo(() => {
+    // The crosshair already marks the moving end, so the axes only need the
+    // anchor the drag started from.
+    if (!toolDrag || toolDrag.kind === "zoom" || !toolReadout?.startValueLabel) return null;
+    return {
+      yRatio: toolDrag.startYRatio,
+      label: toolReadout.startValueLabel,
+      color: toolReadout.direction === "down" ? colors.negative : themeColors.positive,
+    };
+  }, [colors.negative, toolDrag, toolReadout]);
+  const buildAxisMarkers = (side: "left" | "right") => {
+    if (!axisMarkers || !panel.axes[side]) return undefined;
+    const row = Math.round(axisMarkers.yRatio * Math.max(panel.height - 1, 0));
+    return [{
+      row,
+      pixelY: axisMarkers.yRatio * Math.max(panel.height * cellHeightPx - 1, 0),
+      label: axisMarkers.label,
+      color: axisMarkers.color,
+    }];
+  };
+  const leftAxisMarkers = buildAxisMarkers("left");
+  const rightAxisMarkers = buildAxisMarkers("right");
 
+  const pointerRatios = useCallback((event: ChartMouseEvent) => {
+    const pointerTarget = plotRef.current as unknown as Parameters<typeof getLocalPlotPointer>[1];
+    const pointer = getLocalPlotPointer(event, pointerTarget, renderer);
+    if (!pointer) return null;
+    return {
+      xRatio: plotWidth <= 1 ? 0 : Math.max(0, Math.min(1, pointer.cellX / (plotWidth - 1))),
+      yRatio: panel.height <= 1 ? 0.5 : Math.max(0, Math.min(1, pointer.cellY / (panel.height - 1))),
+    };
+  }, [panel.height, plotWidth, renderer]);
   const updateCursor = useCallback((event: ChartMouseEvent): boolean => {
     const pointerTarget = plotRef.current as unknown as Parameters<typeof getLocalPlotPointer>[1];
     const pointer = getLocalPlotPointer(event, pointerTarget, renderer);
@@ -385,24 +892,136 @@ function CompositePanelSurface({
   }, [onCursorDateChange]);
   const startDrag = useCallback((event: ChartMouseEvent) => {
     onActivate?.();
+    // The plot consumes the press, so the browser never moves focus off a text
+    // field for us. Hand it back, but only for a press that truly landed here:
+    // a dialog over the plot must keep the focus it just took.
+    if (isDesktopWeb) releaseEditableFocus(event);
     consumeChartMouseEvent(event);
+    // A keyboard-armed tool covers terminals that never forward modifier drags.
+    const tool = resolveChartToolKind(event.modifiers) ?? armedTool;
+    if (tool) {
+      const ratios = pointerRatios(event);
+      if (!ratios) return;
+      // With a drawing tool in hand, grabbing an existing shape edits it
+      // instead of starting a new one on top of it.
+      const hit = isDrawingTool(tool)
+        ? hitTestDrawings(drawings, scene, panel, ratios, plotAspect)
+        : null;
+      if (hit) {
+        onSelectDrawing(hit.drawing.id);
+        dragRef.current = {
+          kind: "edit",
+          drawingId: hit.drawing.id,
+          pointIndex: hit.pointIndex,
+          lastXRatio: ratios.xRatio,
+          lastYRatio: ratios.yRatio,
+        };
+        updateCursor(event);
+        return;
+      }
+      const started: ChartToolDrag = {
+        kind: tool,
+        startXRatio: ratios.xRatio,
+        startYRatio: ratios.yRatio,
+        endXRatio: ratios.xRatio,
+        endYRatio: ratios.yRatio,
+        path: [{ xRatio: ratios.xRatio, yRatio: ratios.yRatio }],
+      };
+      if (isDrawingTool(tool)) onSelectDrawing(null);
+      dragRef.current = { ...started, path: [...started.path] };
+      setToolDrag(started);
+      updateCursor(event);
+      return;
+    }
     if (!updateCursor(event)) return;
     dragRef.current = {
+      kind: "pan",
       startGlobalX: getGlobalMouseX(event, renderer),
       startViewport: viewport,
     };
-  }, [onActivate, renderer, updateCursor, viewport]);
+  }, [
+    armedTool,
+    drawings,
+    onActivate,
+    onSelectDrawing,
+    panel,
+    plotAspect,
+    pointerRatios,
+    renderer,
+    scene,
+    updateCursor,
+    viewport,
+  ]);
   const dragViewport = useCallback((event: ChartMouseEvent) => {
     const drag = dragRef.current;
     if (!drag) return;
     consumeChartMouseEvent(event);
     updateCursor(event);
+    if (drag.kind === "edit") {
+      const ratios = pointerRatios(event);
+      if (!ratios) return;
+      // Read the deltas before advancing the ref: the state updater runs later,
+      // and a mutable capture would hand it a zero move every time.
+      const deltaXRatio = ratios.xRatio - drag.lastXRatio;
+      const deltaYRatio = ratios.yRatio - drag.lastYRatio;
+      const { drawingId, pointIndex } = drag;
+      drag.lastXRatio = ratios.xRatio;
+      drag.lastYRatio = ratios.yRatio;
+      onEditDrawing(
+        drawingId,
+        (drawing) => shiftDrawing(drawing, scene, panel, deltaXRatio, deltaYRatio, pointIndex),
+      );
+      return;
+    }
+    if (drag.kind !== "pan") {
+      const ratios = pointerRatios(event);
+      if (!ratios) return;
+      drag.endXRatio = ratios.xRatio;
+      drag.endYRatio = ratios.yRatio;
+      if (drag.kind === "pencil") drag.path.push({ xRatio: ratios.xRatio, yRatio: ratios.yRatio });
+      setToolDrag({ ...drag, path: [...drag.path] });
+      return;
+    }
     const deltaCells = getGlobalMouseX(event, renderer) - drag.startGlobalX;
     onPanViewport(deltaCells / Math.max(plotWidth, 1), drag.startViewport);
-  }, [onPanViewport, plotWidth, renderer, updateCursor]);
-  const resetDrag = useCallback(() => {
+  }, [
+    onEditDrawing,
+    onPanViewport,
+    panel,
+    plotWidth,
+    pointerRatios,
+    renderer,
+    scene,
+    updateCursor,
+  ]);
+  const finishToolDrag = useCallback(() => {
+    const drag = dragRef.current;
+    if (!drag || drag.kind === "pan") return;
     dragRef.current = null;
-  }, []);
+    if (drag.kind === "edit") return;
+    setToolDrag(null);
+    if (isDrawingTool(drag.kind)) {
+      const drawing = resolveDrawingFromDrag(scene, panel, drag, drawColor, nextDrawingId());
+      if (drawing) onDraw(drawing);
+      return;
+    }
+    if (drag.kind !== "zoom") return;
+    const range = resolveZoomBoxRange(scene, drag, minimumViewportSpanMs);
+    if (range) onSetViewport(range);
+  }, [drawColor, minimumViewportSpanMs, onDraw, onSetViewport, panel, scene]);
+  const resetDrag = useCallback(() => {
+    if (dragRef.current?.kind === "pan") {
+      dragRef.current = null;
+      return;
+    }
+    finishToolDrag();
+  }, [finishToolDrag]);
+  const handleMouseMove = useCallback((event: ChartMouseEvent) => {
+    // A release over a neighbouring pane never reaches this surface, so treat a
+    // plain move, which only fires with no button held, as the missing release.
+    finishToolDrag();
+    updateCursor(event);
+  }, [finishToolDrag, updateCursor]);
   const panFromWheel = useCallback((event: ChartMouseEvent) => {
     const direction = event.scroll?.direction;
     if (!direction) return;
@@ -426,7 +1045,34 @@ function CompositePanelSurface({
   }, [onActivate, onPanViewport, onZoomViewport, plotWidth, renderer, updateCursor]);
 
   return (
-    <Box flexDirection="row" height={panel.height} width={plotWidth + leftAxisWidth + rightAxisWidth + axisGap * ((leftAxisWidth ? 1 : 0) + (rightAxisWidth ? 1 : 0))}>
+    <Box
+      flexDirection="row"
+      height={panel.height}
+      width={plotWidth + leftAxisWidth + rightAxisWidth + axisGap * ((leftAxisWidth ? 1 : 0) + (rightAxisWidth ? 1 : 0))}
+      position="relative"
+    >
+      {measureReadout ? (
+        <Box
+          position="absolute"
+          left={measureReadout.left}
+          top={measureReadout.top}
+          width={measureReadout.width}
+          height={1}
+          zIndex={25}
+          backgroundColor={colors.background}
+          style={isDesktopWeb
+            ? {
+              width: "auto",
+              paddingInline: 4,
+              borderRadius: 4,
+              backgroundColor: `color-mix(in srgb, ${colors.background} 82%, transparent)`,
+            }
+            : undefined}
+          data-gloom-role="composite-chart-measure"
+        >
+          <Text fg={measureReadout.color}>{measureReadout.text}</Text>
+        </Box>
+      ) : null}
       {leftAxisWidth > 0 ? (
         <>
           <PriceAxisLabels
@@ -441,6 +1087,7 @@ function CompositePanelSurface({
             cursorColor={colors.crosshair}
             cursorBackgroundColor={colors.background}
             axisColor={colors.textDim}
+            extraMarkers={leftAxisMarkers}
           />
           <Box width={axisGap} />
         </>
@@ -452,16 +1099,17 @@ function CompositePanelSurface({
         flexDirection="column"
         bitmaps={bitmapLayers}
         crosshair={crosshair}
-        onMouseMove={interactive ? updateCursor : undefined}
+        vectors={vectors}
+        onMouseMove={interactive ? handleMouseMove : undefined}
         onMouseDown={interactive ? startDrag : undefined}
         onMouseDrag={interactive ? dragViewport : undefined}
         onMouseUp={interactive ? resetDrag : undefined}
         onMouseDragEnd={interactive ? resetDrag : undefined}
         onMouseScroll={interactive ? panFromWheel : undefined}
         onMouseOut={interactive ? clearCursor : undefined}
-        cursor={interactive ? "grab" : undefined}
+        cursor={interactive ? toolDrag ? "crosshair" : "grab" : undefined}
         data-gloom-interactive={interactive ? "true" : undefined}
-        data-gloom-role="composite-chart-panel"
+        data-gloom-role={COMPOSITE_PANEL_ROLE}
         data-gloom-label={panel.label ?? panel.id}
       >
         {textLines.map((line, index) => <Text key={index} fg={colors.text}>{line}</Text>)}
@@ -481,6 +1129,7 @@ function CompositePanelSurface({
             cursorColor={colors.crosshair}
             cursorBackgroundColor={colors.background}
             axisColor={colors.textDim}
+            extraMarkers={rightAxisMarkers}
           />
         </>
       ) : null}
@@ -526,11 +1175,6 @@ function CompositeLegend({
 }) {
   const isDesktopWeb = useUiHost().kind === "desktop-web";
   const scrollRef = useRef<ScrollBoxRenderable | null>(null);
-  const dateLabel = scene
-    ? scene.cursorDate
-      ? formatCompositeCursorDate(scene.cursorDate, scene.startTime, scene.endTime)
-      : "Latest"
-    : "";
   const cursorValueById = new Map(
     scene?.cursorValues.map((entry) => [entry.seriesId, entry] as const) ?? [],
   );
@@ -543,18 +1187,20 @@ function CompositeLegend({
         && Number.isFinite(entry.latestChangePercent)
       ? ` ${formatPercentRaw(entry.latestChangePercent)}`
       : "";
-    const fullText = `${entry.label} ${legendValue(
-      entry,
-      cursorValue?.value ?? null,
-      formatValue,
-    )}${changeText}`;
+    const fullText = entry.points.length === 0
+      ? `${entry.label}${entry.hidden ? "" : " no data"}`
+      : `${entry.label} ${legendValue(
+        entry,
+        cursorValue?.value ?? null,
+        formatValue,
+      )}${changeText}`;
     const details = formatCompositePointDetails(cursorValue?.point);
     const tooltip = details ? `${fullText} · ${details}` : fullText;
     const textWidth = Math.max(1, Math.min(30, [...fullText].length));
     return {
       entry,
       text: truncateWithEllipsis(fullText, textWidth),
-      width: textWidth + 2 + (toggleable ? 5 : 0),
+      width: textWidth + 2,
       toggleable,
       tooltip,
     };
@@ -567,25 +1213,11 @@ function CompositeLegend({
     ? Math.max(1, Math.min(width, Math.floor(accessoryWidth ?? 14)))
     : 0;
   const reservedAccessoryGap = accessory && width > resolvedAccessoryWidth ? 1 : 0;
+  // The cursor date lives on the time axis, where the crosshair points at it.
   const widthBeforeAccessory = Math.max(0, width - resolvedAccessoryWidth - reservedAccessoryGap);
-  const minimumSeriesPreviewWidth = entries.length > 0
-    ? Math.min(7, desiredSeriesWidth)
-    : 0;
-  const showDate = dateLabel.length > 0 && widthBeforeAccessory >= (
-    dateLabel.length
-    + (minimumSeriesPreviewWidth > 0 ? minimumSeriesPreviewWidth + 1 : 0)
-  );
-  const dateWidth = showDate ? dateLabel.length : 0;
-  const dateSeriesGap = showDate && entries.length > 0 ? 1 : 0;
-  const seriesWidth = Math.min(
-    desiredSeriesWidth,
-    Math.max(0, widthBeforeAccessory - dateWidth - dateSeriesGap),
-  );
+  const seriesWidth = Math.min(desiredSeriesWidth, widthBeforeAccessory);
   const accessorySpacerWidth = accessory
-    ? Math.max(
-      reservedAccessoryGap,
-      width - dateWidth - dateSeriesGap - seriesWidth - resolvedAccessoryWidth,
-    )
+    ? Math.max(reservedAccessoryGap, width - seriesWidth - resolvedAccessoryWidth)
     : 0;
   const keyboardEntryStart = keyboardIndex === null || keyboardIndex === undefined
     ? null
@@ -648,12 +1280,6 @@ function CompositeLegend({
       zIndex={20}
       data-gloom-role="composite-chart-legend"
     >
-      {showDate ? (
-        <Box width={dateWidth} height={1} flexShrink={0} overflow="hidden">
-          <Text fg={themeColors.textDim}>{dateLabel}</Text>
-        </Box>
-      ) : null}
-      {dateSeriesGap > 0 ? <Box width={dateSeriesGap} flexShrink={0} /> : null}
       {seriesWidth > 0 ? (
         <ScrollBox
           ref={scrollRef}
@@ -710,12 +1336,9 @@ function CompositeLegend({
                 ) : (
                   <Text fg={entryVisible ? entry.color : themeColors.textMuted}>● </Text>
                 )}
+                {/* The filled/hollow marker already says whether a series is
+                    shown; the word only repeated it in every legend slot. */}
                 <Text fg={entryVisible ? themeColors.text : themeColors.textDim}>{text}</Text>
-                {toggleable ? (
-                  <Text fg={themeColors.textMuted}>
-                    {entryVisible ? " Hide" : " Show"}
-                  </Text>
-                ) : null}
               </Box>
               );
             })}
@@ -770,8 +1393,43 @@ export function CompositeChart({
   isSeriesToggleable,
 }: CompositeChartProps) {
   const { cellWidthPx = 8 } = useUiCapabilities();
+  const isDesktopWeb = useUiHost().kind === "desktop-web";
   const [internalCursorDate, setInternalCursorDate] = useState<Date | null>(null);
   const [legendKeyboardIndex, setLegendKeyboardIndex] = useState<number | null>(null);
+  const [toolSpan, setToolSpan] = useState<ChartToolSpan | null>(null);
+  const [armedTool, setArmedTool] = useState<ChartToolKind | null>(null);
+  // ponytail: drawings live with the mounted chart. Persisting them belongs with
+  // pane settings, which is a separate plumbing job.
+  const [drawings, setDrawings] = useState<readonly ChartDrawing[]>([]);
+  const [selectedDrawingId, setSelectedDrawingId] = useState<string | null>(null);
+  const [drawColor, setDrawColor] = useState<string>(CHART_DRAWING_COLORS[0]);
+  const addDrawing = useCallback((drawing: ChartDrawing) => {
+    setDrawings((current) => [...current, drawing]);
+    setSelectedDrawingId(drawing.id);
+  }, []);
+  const editDrawing = useCallback((
+    id: string,
+    update: (drawing: ChartDrawing) => ChartDrawing,
+  ) => {
+    setDrawings((current) => current.map((drawing) => drawing.id === id ? update(drawing) : drawing));
+  }, []);
+  const removeDrawing = useCallback(() => {
+    setDrawings((current) => {
+      if (current.length === 0) return current;
+      const target = selectedDrawingId
+        ? current.filter((drawing) => drawing.id !== selectedDrawingId)
+        : current.slice(0, -1);
+      return target.length === current.length ? current.slice(0, -1) : target;
+    });
+    setSelectedDrawingId(null);
+  }, [selectedDrawingId]);
+  const pickDrawColor = useCallback((color: string) => {
+    setDrawColor(color);
+    if (!selectedDrawingId) return;
+    setDrawings((current) => current.map(
+      (drawing) => drawing.id === selectedDrawingId ? { ...drawing, color } : drawing,
+    ));
+  }, [selectedDrawingId]);
   const resolvedCursorDate = cursorDate === undefined ? internalCursorDate : cursorDate;
   const totalWidth = Math.max(1, Math.floor(width));
   const totalHeight = Math.max(1, Math.floor(height));
@@ -782,8 +1440,11 @@ export function CompositeChart({
       ? supplied
       : visibleSeries;
   }, [timelineSeries, visibleSeries]);
+  // A series with no observation in this window stays listed. Dropping it made
+  // the legend disagree with the series editor and looked like the chart had
+  // silently thrown the series away.
   const visibleLegendSeries = useMemo(
-    () => (legendSeries ?? visibleSeries).filter((entry) => entry.points.length > 0),
+    () => legendSeries ?? visibleSeries,
     [legendSeries, visibleSeries],
   );
   const visibleSeriesIds = useMemo(
@@ -947,19 +1608,22 @@ export function CompositeChart({
       return sameCompositeViewport(next, initialViewport) ? null : next;
     });
   }, [allowHistoricalBackfill, initialViewport, marketTimelineSeries, navigationBounds]);
+  const setViewportRange = useCallback((range: CompositeViewportRange) => {
+    if (!navigationBounds || !initialViewport) return;
+    viewportInteractionRef.current = "zoom";
+    const next = clampCompositeViewport(range, navigationBounds);
+    setInteractionViewport(sameCompositeViewport(next, initialViewport) ? null : next);
+  }, [initialViewport, navigationBounds]);
   const resetViewport = useCallback(() => {
     viewportInteractionRef.current = "reset";
     setInteractionViewport(null);
   }, []);
-  const hasLeftAxis = visibleSeries.some((entry) => entry.axis === "left");
-  const hasRightAxis = visibleSeries.some((entry) => entry.axis === "right");
-  const resolvedAxisWidth = Math.max(0, Math.floor(axisWidth));
-  const leftAxisWidth = hasLeftAxis ? resolvedAxisWidth : 0;
-  const rightAxisWidth = hasRightAxis ? resolvedAxisWidth : 0;
-  const axisGap = resolvedAxisWidth > 0 ? 1 : 0;
-  const horizontalReserved = leftAxisWidth + rightAxisWidth
-    + axisGap * ((leftAxisWidth ? 1 : 0) + (rightAxisWidth ? 1 : 0));
-  const plotWidth = Math.max(1, totalWidth - horizontalReserved);
+  // Sticky while armed: the toolbar chip shows which tool owns the drag, and a
+  // one-shot tool would blink off before the user could see it.
+  const armTool = useCallback((tool: ChartToolKind | null) => {
+    setArmedTool((current) => current === tool ? null : tool);
+    if (tool === null) setSelectedDrawingId(null);
+  }, []);
   const legendRows = showLegend && (visibleSeries.length > 0 || legendAccessory)
     ? 1
     : 0;
@@ -980,6 +1644,35 @@ export function CompositeChart({
     viewport: effectiveViewport ?? undefined,
     timelineSeries: marketTimelineSeries,
   }), [effectiveViewport, marketTimelineSeries, panelCount, panels, visibleSeries]);
+  // Gutters follow the axes the scene actually built. Reading the series list
+  // instead drops a gutter the moment its series has no observation in view,
+  // which is exactly what a zoom does, taking the axis labels with it.
+  const scenePanels = projectedScene?.panels;
+  const hasLeftAxis = scenePanels
+    ? scenePanels.some((panel) => !!panel.axes.left)
+    : visibleSeries.some((entry) => entry.axis === "left");
+  const hasRightAxis = scenePanels
+    ? scenePanels.some((panel) => !!panel.axes.right)
+    : visibleSeries.some((entry) => entry.axis === "right");
+  const maximumAxisWidth = Math.max(0, Math.floor(axisWidth));
+  // Gutters follow their labels. A fixed budget left dead space beside short
+  // prices, which costs plot width on every chart that does not need it.
+  const resolvedAxisWidth = useMemo(() => Math.min(
+    maximumAxisWidth,
+    Math.max(
+      MINIMUM_AXIS_LABEL_WIDTH,
+      ...(projectedScene?.panels ?? []).flatMap((panel) => [
+        compositeAxisLabelWidth(panel.axes.left),
+        compositeAxisLabelWidth(panel.axes.right),
+      ]),
+    ),
+  ), [maximumAxisWidth, projectedScene]);
+  const leftAxisWidth = hasLeftAxis ? resolvedAxisWidth : 0;
+  const rightAxisWidth = hasRightAxis ? resolvedAxisWidth : 0;
+  const axisGap = resolvedAxisWidth > 0 ? 1 : 0;
+  const horizontalReserved = leftAxisWidth + rightAxisWidth
+    + axisGap * ((leftAxisWidth ? 1 : 0) + (rightAxisWidth ? 1 : 0));
+  const plotWidth = Math.max(1, totalWidth - horizontalReserved);
   const layoutPanels = useMemo<CompositePanelScene[] | null>(() => {
     if (!projectedScene) return null;
     const panelSpecById = new Map(panels.map((panel) => [panel.id, panel] as const));
@@ -1081,6 +1774,13 @@ export function CompositeChart({
       onToggleSeries(entry.id);
       return;
     }
+    if (isPlainKey(event, "escape") && (armedTool || selectedDrawingId)) {
+      event.preventDefault();
+      event.stopPropagation();
+      setArmedTool(null);
+      setSelectedDrawingId(null);
+      return;
+    }
     if (isPlainKey(event, "escape") && legendKeyboardIndex !== null && !scene?.cursorDate) {
       event.preventDefault();
       event.stopPropagation();
@@ -1091,6 +1791,12 @@ export function CompositeChart({
     if (!interaction) return;
     if (
       (interaction === "clear-cursor" && !scene?.cursorDate)
+      || ((interaction === "arm-measure"
+        || interaction === "arm-zoom"
+        || interaction === "arm-line"
+        || interaction === "arm-pencil") && !scene)
+      || (interaction === "delete-drawing" && drawings.length === 0)
+      || (interaction === "cycle-colour" && !isDrawingTool(armedTool) && !selectedDrawingId)
       || ((interaction === "cursor-left" || interaction === "cursor-right") && !scene)
       || ((interaction === "zoom-in"
         || interaction === "zoom-out"
@@ -1102,6 +1808,19 @@ export function CompositeChart({
     event.preventDefault();
     event.stopPropagation();
     switch (interaction) {
+      case "arm-measure":
+      case "arm-zoom":
+      case "arm-line":
+      case "arm-pencil":
+        onActivate?.();
+        armTool(ARMED_TOOL_BY_INTERACTION[interaction]);
+        return;
+      case "delete-drawing":
+        removeDrawing();
+        return;
+      case "cycle-colour":
+        pickDrawColor(nextDrawingColor(drawColor));
+        return;
       case "clear-cursor":
         keyboardCursorDateRef.current = null;
         updateCursor(null);
@@ -1213,8 +1932,28 @@ export function CompositeChart({
   const timeAxisCursorLabel = scene.cursorDate
     ? formatCompositeTimeAxisDate(scene.cursorDate, scene.startTime, scene.endTime)
     : null;
+  // The crosshair labels the moving end, so the axis only adds the anchor.
+  const timeAxisMarkers = toolSpan
+    ? [{
+      ratio: toolSpan.startXRatio,
+      label: formatCompositeTimeAxisDate(
+        new Date(unprojectCompositeTimestamp(scene.timeScale, toolSpan.startXRatio)),
+        scene.startTime,
+        scene.endTime,
+      ),
+      color: toolSpan.color,
+    }]
+    : undefined;
   return (
-    <Box flexDirection="column" width={totalWidth} height={totalHeight} overflow="hidden" data-gloom-role="composite-chart">
+    <Box
+      flexDirection="column"
+      width={totalWidth}
+      height={totalHeight}
+      overflow="hidden"
+      // The tool overlay anchors here; without it the desktop pins it to the page.
+      position="relative"
+      data-gloom-role="composite-chart"
+    >
       {showLegend ? (
         <CompositeLegend
           scene={scene}
@@ -1231,6 +1970,24 @@ export function CompositeChart({
           keyboardIndex={legendKeyboardIndex}
         />
       ) : null}
+      {interactive && plotWidth > CHART_TOOLBAR_WIDTH + 4 ? (
+        <ChartToolbar
+          armedTool={armedTool}
+          isDesktopWeb={isDesktopWeb}
+          left={leftPadding}
+          top={legendRows}
+          drawColor={drawColor}
+          showColors={isDrawingTool(armedTool) || !!selectedDrawingId}
+          onArmTool={(tool) => {
+            onActivate?.();
+            armTool(tool);
+          }}
+          onPickColor={(color) => {
+            onActivate?.();
+            pickDrawColor(color);
+          }}
+        />
+      ) : null}
       {scene.panels.map((panel) => (
         <CompositePanelSurface
           key={panel.id}
@@ -1243,10 +2000,20 @@ export function CompositeChart({
           colors={resolvedColors}
           interactive={interactive}
           viewport={effectiveViewport!}
+          minimumViewportSpanMs={minimumViewportSpanMs}
+          armedTool={armedTool}
+          drawings={drawings}
+          selectedDrawingId={selectedDrawingId}
+          drawColor={drawColor}
+          onDraw={addDrawing}
+          onEditDrawing={editDrawing}
+          onSelectDrawing={setSelectedDrawingId}
           onActivate={onActivate}
           onCursorDateChange={updateCursor}
           onPanViewport={panViewport}
           onZoomViewport={zoomViewport}
+          onSetViewport={setViewportRange}
+          onToolSpanChange={setToolSpan}
         />
       ))}
       {timeAxisLayout ? (
@@ -1262,6 +2029,7 @@ export function CompositeChart({
             cursorLabel={timeAxisCursorLabel}
             cursorColor={resolvedColors.crosshair}
             cursorBackgroundColor={resolvedColors.background}
+            extraMarkers={timeAxisMarkers}
           />
           {rightPadding > 0 ? <Box width={rightPadding} /> : null}
         </Box>
