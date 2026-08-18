@@ -277,6 +277,7 @@ export function ThirteenFPane({ focused, width, height }: PaneProps) {
     loading: status === "loading",
     error,
     info: browserStatusInfo,
+    hints: [{ id: "search", key: "/", label: "search", onPress: focusSearch }],
   });
 
   const rootBefore = (
@@ -542,6 +543,7 @@ function FundDetailView({
     loading: status === "loading",
     error,
     info: detailStatusInfo,
+    showOpenHint: true,
   });
 
   if ((status === "loading" || status === "idle") && !data) {
@@ -558,7 +560,7 @@ function FundDetailView({
     return (
       <Box flexDirection="column" width={width} flexGrow={1} overflow="hidden">
         <Box padding={1}>
-          <EmptyState title="13F fund unavailable." message={error ?? "Failed to load fund."} hint="Press r to retry." />
+          <EmptyState title="13F fund unavailable." message={error ?? "Failed to load fund."} />
         </Box>
       </Box>
     );

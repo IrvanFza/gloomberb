@@ -50,6 +50,7 @@ export function useNewsArticleFooter({
     url: article?.url,
     source: article?.source,
     info: footerInfo,
+    showOpenHint: true,
     loading,
     error,
   });

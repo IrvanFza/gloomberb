@@ -3,6 +3,7 @@ import {
   useExternalLinkFooter,
   usePaneFooter,
   type PaneFooterSegment,
+  type PaneHint,
 } from "../../../components";
 
 const EMPTY_STATUS_INFO: PaneFooterSegment[] = [];
@@ -28,12 +29,14 @@ export function usePaneStatusFooter({
   loading = false,
   error,
   info = EMPTY_STATUS_INFO,
+  hints,
   enabled = true,
 }: {
   registrationId: string;
   loading?: boolean;
   error?: string | null;
   info?: readonly PaneFooterSegment[];
+  hints?: PaneHint[];
   enabled?: boolean;
 }) {
   const statusInfo = useMemo(
@@ -42,8 +45,10 @@ export function usePaneStatusFooter({
   );
   usePaneFooter(
     registrationId,
-    () => enabled && statusInfo.length > 0 ? { info: statusInfo } : null,
-    [enabled, registrationId, statusInfo],
+    () => enabled && (statusInfo.length > 0 || (hints?.length ?? 0) > 0)
+      ? { info: statusInfo, hints }
+      : null,
+    [enabled, hints, registrationId, statusInfo],
   );
 }
 
@@ -56,6 +61,8 @@ export function usePaneStatusLinkFooter({
   loading = false,
   error,
   info = EMPTY_STATUS_INFO,
+  hints,
+  showOpenHint = false,
 }: {
   registrationId: string;
   focused: boolean;
@@ -65,6 +72,8 @@ export function usePaneStatusLinkFooter({
   loading?: boolean;
   error?: string | null;
   info?: readonly PaneFooterSegment[];
+  hints?: PaneHint[];
+  showOpenHint?: boolean;
 }) {
   const statusInfo = useMemo(
     () => buildPaneStatusInfo({ loading, error, info }),
@@ -77,6 +86,7 @@ export function usePaneStatusLinkFooter({
     source,
     label,
     info: statusInfo,
-    showHint: false,
+    hints,
+    showHint: showOpenHint,
   });
 }
