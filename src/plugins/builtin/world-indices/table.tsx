@@ -1,10 +1,9 @@
 import type { DataTableCell, DataTableColumn } from "../../../components";
 import { colors, priceColor } from "../../../theme/colors";
-import type { MarketState } from "../../../types/financials";
 import { TextAttributes } from "../../../ui";
 import { formatCurrency, formatPercentRaw } from "../../../utils/format";
+import { marketStatusDot, type BoardQuoteMap } from "../shared/use-quote-board";
 import type {
-  QuoteMap,
   WorldIndexColumnId,
   WorldIndexTableRow,
 } from "./model";
@@ -29,26 +28,11 @@ export function createWorldIndexColumns(width: number): WorldIndexColumn[] {
   ];
 }
 
-function marketStatusDot(state: MarketState | undefined): { char: string; color: string } {
-  switch (state) {
-    case "REGULAR":
-      return { char: "●", color: colors.positive };
-    case "PRE":
-    case "POST":
-    case "PREPRE":
-    case "POSTPOST":
-      return { char: "●", color: colors.warning };
-    case "CLOSED":
-    default:
-      return { char: "●", color: colors.negative };
-  }
-}
-
 export function renderWorldIndexCell(
   row: WorldIndexTableRow,
   column: WorldIndexColumn,
   rowState: { selected: boolean },
-  quotes: QuoteMap,
+  quotes: BoardQuoteMap,
 ): DataTableCell {
   if (row.type === "header") return { text: "" };
 
@@ -56,6 +40,7 @@ export function renderWorldIndexCell(
   const state = quotes.get(entry.symbol);
   const quote = state?.quote;
   const selectedColor = rowState.selected ? colors.selectedText : undefined;
+  const dimmed = rowState.selected ? colors.selectedText : colors.textDim;
 
   switch (column.id) {
     case "status": {
@@ -74,20 +59,15 @@ export function renderWorldIndexCell(
         color: selectedColor,
       };
     case "price":
-      if (state?.loading && !quote) {
-        return { text: "…", color: rowState.selected ? colors.selectedText : colors.textDim };
-      }
-      if (state?.error || quote?.price === undefined) {
-        return { text: "—", color: rowState.selected ? colors.selectedText : colors.textDim };
-      }
+      if (state?.loading && !quote) return { text: "…", color: dimmed };
+      if (quote?.price === undefined) return { text: "—", color: dimmed };
+      // A retained quote still beats a dash; dim it so stale is visible.
       return {
         text: formatCurrency(quote.price, quote.currency ?? "USD"),
-        color: selectedColor,
+        color: state?.stale ? dimmed : selectedColor,
       };
     case "changePercent":
-      if (!quote || quote.changePercent === undefined) {
-        return { text: "—", color: rowState.selected ? colors.selectedText : colors.textDim };
-      }
+      if (!quote || quote.changePercent === undefined) return { text: "—", color: dimmed };
       return {
         text: formatPercentRaw(quote.changePercent),
         color: selectedColor ?? priceColor(quote.changePercent),
