@@ -1,8 +1,13 @@
+import {
+  attachFredSeriesPersistence,
+  resetFredSeriesPersistence,
+} from "../../data/fred-series";
 import { portfolioAnalyticsModule } from "./analytics";
 import { brokerManagerModule } from "./broker-manager";
 import { changelogModule } from "./changelog";
 import { connectionsModule } from "./connections";
 import { correlationModule } from "./correlation";
+import { creditConditionsModule } from "./credit-conditions";
 import { economicCalendarModule } from "./econ";
 import { earningsModule } from "./earnings";
 import { fearGreedModule } from "./fear-greed";
@@ -14,13 +19,23 @@ import { layoutManagerModule } from "./layout-manager";
 import { marketHeatmapModule } from "./market-heatmap";
 import { marketMoversModule } from "./market-movers";
 import { tvModule } from "./tv";
-import { composeBuiltinPlugin } from "./plugin-module";
+import { volatilityModule } from "./volatility";
+import { composeBuiltinPlugin, type PluginModule } from "./plugin-module";
 import { portfolioListModule } from "./portfolio-list";
 import { scannerModule } from "./scanner";
 import { sectorsModule } from "./sectors";
 import { treasuryAuctionsModule } from "./treasury-auctions";
 import { worldIndicesModule } from "./world-indices";
 import { yieldCurveModule } from "./yield-curve";
+
+const macroSharedResourcesModule = {
+  setup(ctx) {
+    attachFredSeriesPersistence(ctx.persistence);
+  },
+  dispose() {
+    resetFredSeriesPersistence();
+  },
+} satisfies PluginModule;
 
 export const applicationPlugin = composeBuiltinPlugin({
   id: "application",
@@ -71,11 +86,14 @@ export const macroPlugin = composeBuiltinPlugin({
   id: "macro",
   name: "Macro",
   version: "1.0.0",
-  description: "Economic calendar, yield curve, Treasury auctions, earnings calendar, and live financial TV.",
+  description: "Economic calendar, rates, volatility, credit spreads, Treasury auctions, earnings, and live financial TV.",
   toggleable: true,
   modules: [
+    macroSharedResourcesModule,
     economicCalendarModule,
     yieldCurveModule,
+    volatilityModule,
+    creditConditionsModule,
     treasuryAuctionsModule,
     earningsModule,
     tvModule,
