@@ -1,4 +1,8 @@
 import { join } from "path";
+import {
+  connectionHealth,
+  registerGloomCloudConnectionSources,
+} from "./connection-health";
 import { AppPersistence } from "../data/app-persistence";
 import { TickerRepository } from "../data/ticker-repository";
 import { MarketDataCoordinator, setSharedMarketDataCoordinator } from "../market-data/coordinator";
@@ -39,11 +43,14 @@ export function createAppServices({
   const persistence = measurePerf("startup.services.persistence", () => new AppPersistence(dbPath));
   setIbkrPortfolioPerformanceResourceStore(persistence.resources);
   const tickerRepository = measurePerf("startup.services.ticker-repository", () => new TickerRepository(persistence.tickers));
-  const providerRouter = measurePerf("startup.services.asset-data-router", () => new AssetDataRouter(null, [], persistence.resources));
+  const disposeCloudConnectionSources = registerGloomCloudConnectionSources(connectionHealth);
+  const providerRouter = measurePerf("startup.services.asset-data-router", () => (
+    new AssetDataRouter(null, [], persistence.resources, connectionHealth)
+  ));
   const dataProvider: DataProvider = providerRouter;
   const marketData = new MarketDataCoordinator(dataProvider);
-  const pluginRegistry = new PluginRegistry(dataProvider, tickerRepository, persistence);
-  const newsService = new NewsService();
+  const pluginRegistry = new PluginRegistry(dataProvider, tickerRepository, persistence, { connectionHealth });
+  const newsService = new NewsService({ connectionHealth });
   pluginRegistry.capabilities.register("core", assetDataProvider(providerRouter));
   pluginRegistry.capabilities.register("core", {
     ...newsProvider({
@@ -94,6 +101,7 @@ export function createAppServices({
       setSharedNewsService(null);
       newsService.stop();
       pluginRegistry.destroy();
+      disposeCloudConnectionSources();
       setIbkrPortfolioPerformanceResourceStore(null);
       persistence.close();
     },
