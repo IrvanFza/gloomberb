@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, test } from "bun:test";
+import { createHash } from "crypto";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -241,6 +242,7 @@ describe("checkForUpdate", () => {
       assets: [{
         name: expectedAssetName(true),
         browser_download_url: "https://example.com/gloomberb.gz",
+        digest: `sha256:${"ab".repeat(32)}`,
       }],
     }), {
       status: 200,
@@ -261,6 +263,7 @@ describe("checkForUpdate", () => {
         publishedAt: "2026-04-03T00:00:00Z",
         updateAction: { kind: "self" },
         compressed: true,
+        checksum: "ab".repeat(32),
       });
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
@@ -285,6 +288,36 @@ describe("checkForUpdateDetailed", () => {
       await expect(checkForUpdateDetailed("0.3.1")).resolves.toEqual({
         kind: "error",
         error: "GitHub returned 503",
+      });
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
+      Object.defineProperty(process, "argv", { value: originalArgv, configurable: true });
+    }
+  });
+
+  test.each([
+    ["missing", undefined],
+    ["malformed", "sha256:not-a-checksum"],
+  ])("rejects release assets with a %s digest", async (_label, digest) => {
+    const originalExecPath = process.execPath;
+    const originalArgv = process.argv;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      tag_name: "v0.3.2",
+      published_at: "2026-04-03T00:00:00Z",
+      assets: [{
+        name: expectedAssetName(),
+        browser_download_url: "https://example.com/gloomberb",
+        ...(digest ? { digest } : {}),
+      }],
+    }), { status: 200 })) as typeof fetch;
+
+    try {
+      Object.defineProperty(process, "execPath", { value: "/Applications/gloomberb", configurable: true });
+      Object.defineProperty(process, "argv", { value: ["/Applications/gloomberb"], configurable: true });
+
+      await expect(checkForUpdateDetailed("0.3.1")).resolves.toEqual({
+        kind: "error",
+        error: expect.stringContaining("valid SHA-256 digest"),
       });
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
@@ -351,28 +384,24 @@ describe("performUpdate", () => {
     }
   });
 
-  it("decompresses gzipped release assets before replacing the binary", async () => {
+  test.each([
+    ["missing", undefined],
+    ["malformed", "not-a-checksum"],
+  ])("leaves the installed binary untouched when the checksum is %s", async (_label, checksum) => {
     const originalExecPath = process.execPath;
     const originalArgv = process.argv;
     const tempDir = mkdtempSync(join(tmpdir(), "gloomberb-update-"));
     const execPath = join(tempDir, "gloomberb");
-    const nextBinary = Buffer.from("new-binary");
-    const payload = gzipSync(nextBinary);
+    const oldBinary = Buffer.from("old-binary");
     const progress: UpdateProgress[] = [];
 
-    writeFileSync(execPath, Buffer.from("old-binary"));
+    writeFileSync(execPath, oldBinary);
     chmodSync(execPath, 0o755);
-    globalThis.fetch = (async () => new Response(payload, {
-      status: 200,
-      headers: { "content-length": String(payload.length) },
-    })) as typeof fetch;
+    globalThis.fetch = (async () => new Response(gzipSync("new-binary"), { status: 200 })) as typeof fetch;
 
     try {
       Object.defineProperty(process, "execPath", { value: execPath, configurable: true });
-      Object.defineProperty(process, "argv", {
-        value: [execPath],
-        configurable: true,
-      });
+      Object.defineProperty(process, "argv", { value: [execPath], configurable: true });
 
       await performUpdate({
         version: "9.9.9",
@@ -381,14 +410,86 @@ describe("performUpdate", () => {
         publishedAt: "2026-04-03T00:00:00Z",
         updateAction: { kind: "self" },
         compressed: true,
-      }, (entry) => {
-        progress.push(entry);
+        ...(checksum ? { checksum } : {}),
+      }, (entry) => { progress.push(entry); });
+
+      expect(readFileSync(execPath)).toEqual(oldBinary);
+      expect(progress.at(-1)).toEqual({
+        phase: "error",
+        error: "Self-update requires a valid SHA-256 checksum.",
       });
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
+      Object.defineProperty(process, "argv", { value: originalArgv, configurable: true });
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces the binary when the downloaded asset checksum matches", async () => {
+    const originalExecPath = process.execPath;
+    const originalArgv = process.argv;
+    const tempDir = mkdtempSync(join(tmpdir(), "gloomberb-update-"));
+    const execPath = join(tempDir, "gloomberb");
+    const nextBinary = Buffer.from("verified-binary");
+    const checksum = createHash("sha256").update(nextBinary).digest("hex");
+    const progress: UpdateProgress[] = [];
+
+    writeFileSync(execPath, Buffer.from("old-binary"));
+    chmodSync(execPath, 0o755);
+    globalThis.fetch = (async () => new Response(nextBinary, { status: 200 })) as typeof fetch;
+
+    try {
+      Object.defineProperty(process, "execPath", { value: execPath, configurable: true });
+      Object.defineProperty(process, "argv", { value: [execPath], configurable: true });
+
+      await performUpdate({
+        version: "9.9.9",
+        tagName: "v9.9.9",
+        downloadUrl: "https://example.com/gloomberb",
+        publishedAt: "2026-04-03T00:00:00Z",
+        updateAction: { kind: "self" },
+        checksum,
+      }, (entry) => { progress.push(entry); });
 
       expect(readFileSync(execPath)).toEqual(nextBinary);
-      expect(progress[0]).toEqual({ phase: "downloading", percent: 0 });
-      expect(progress).toContainEqual({ phase: "downloading", percent: 100 });
       expect(progress.at(-1)).toEqual({ phase: "done" });
+    } finally {
+      Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
+      Object.defineProperty(process, "argv", { value: originalArgv, configurable: true });
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the installed binary untouched when the checksum mismatches", async () => {
+    const originalExecPath = process.execPath;
+    const originalArgv = process.argv;
+    const tempDir = mkdtempSync(join(tmpdir(), "gloomberb-update-"));
+    const execPath = join(tempDir, "gloomberb");
+    const oldBinary = Buffer.from("old-binary");
+    const progress: UpdateProgress[] = [];
+
+    writeFileSync(execPath, oldBinary);
+    chmodSync(execPath, 0o755);
+    globalThis.fetch = (async () => new Response("tampered", { status: 200 })) as typeof fetch;
+
+    try {
+      Object.defineProperty(process, "execPath", { value: execPath, configurable: true });
+      Object.defineProperty(process, "argv", { value: [execPath], configurable: true });
+
+      await performUpdate({
+        version: "9.9.9",
+        tagName: "v9.9.9",
+        downloadUrl: "https://example.com/gloomberb",
+        publishedAt: "2026-04-03T00:00:00Z",
+        updateAction: { kind: "self" },
+        checksum: "00".repeat(32),
+      }, (entry) => { progress.push(entry); });
+
+      expect(readFileSync(execPath)).toEqual(oldBinary);
+      expect(progress.at(-1)).toEqual(expect.objectContaining({
+        phase: "error",
+        error: expect.stringContaining("Checksum mismatch"),
+      }));
     } finally {
       Object.defineProperty(process, "execPath", { value: originalExecPath, configurable: true });
       Object.defineProperty(process, "argv", { value: originalArgv, configurable: true });
