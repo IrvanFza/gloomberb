@@ -26,6 +26,10 @@ import {
   type SeriesTransform,
   type SecuritySeriesSource,
 } from "./types";
+import {
+  isValidChartCapabilityId,
+  isValidChartSeriesId,
+} from "../capabilities/chart-series";
 
 const TIME_RANGES = new Set<TimeRange>(["1D", "1W", "1M", "3M", "6M", "1Y", "5Y", "ALL"]);
 const RESOLUTIONS = new Set<ChartResolution>(["auto", "1m", "5m", "15m", "30m", "45m", "1h", "1d", "1wk", "1mo"]);
@@ -134,6 +138,14 @@ function normalizeSource(value: unknown): ChartSeriesSource | null {
     const seriesId = nonEmptyString(source.seriesId);
     if (!seriesId || source.provider !== "fred") return null;
     return { kind: "economic", provider: "fred", seriesId };
+  }
+  if (source.kind === "capability") {
+    const capabilityId = nonEmptyString(source.capabilityId);
+    const seriesId = nonEmptyString(source.seriesId);
+    if (!capabilityId || !seriesId
+      || !isValidChartCapabilityId(capabilityId)
+      || !isValidChartSeriesId(seriesId)) return null;
+    return { kind: "capability", capabilityId, seriesId };
   }
   if (source.kind !== "security") return null;
   const instrument = record(source.instrument);
@@ -425,12 +437,19 @@ export function validateChartSpec(spec: ChartSpec): ChartSpecValidationResult {
             : definition.unitGroup);
         unitGroupsByPanel.set(entry.panelId, groups);
       }
-    } else {
+    } else if (entry.source.kind === "economic") {
       if (!entry.source.seriesId.trim()) {
         errors.push(issue(`${path}.source.seriesId`, "missing-series", "Economic series ID is required."));
       }
       if (!ECONOMIC_STYLES.has(entry.style)) {
         errors.push(issue(`${path}.style`, "unsupported-style", `${entry.style} is not valid for an economic scalar series.`));
+      }
+    } else {
+      if (!isValidChartCapabilityId(entry.source.capabilityId)) {
+        errors.push(issue(`${path}.source.capabilityId`, "invalid-capability", "Chart series capability ID is invalid."));
+      }
+      if (!isValidChartSeriesId(entry.source.seriesId)) {
+        errors.push(issue(`${path}.source.seriesId`, "invalid-series", "Provider series ID is invalid."));
       }
     }
     if (isOhlcSeriesStyle(entry.style)) {
@@ -440,7 +459,7 @@ export function validateChartSpec(spec: ChartSpec): ChartSpecValidationResult {
         firstCandleByPanel.set(
           entry.panelId,
           entry.label?.trim()
-            || (entry.source.kind === "economic" ? entry.source.seriesId : entry.source.instrument.symbol),
+            || (entry.source.kind === "security" ? entry.source.instrument.symbol : entry.source.seriesId),
         );
       }
       if (entry.transform !== "raw") {

@@ -16,6 +16,7 @@ import type { ChartResolution, TimeRange } from "../../../components/chart/core/
 import type { ChartSpec, ResolvedSeries } from "../../../time-series/types";
 import { getSupportedChartResolutionsForViewport } from "../../../time-series/resolution";
 import { useResolvedChartSpec } from "../../../time-series/hooks";
+import { chartSeriesSourceKey } from "../../../capabilities";
 import { useShortcut } from "../../../react/input";
 import { useDialog, useDialogState, type PromptContext } from "../../../ui/dialog";
 import {
@@ -126,7 +127,9 @@ function ChartComposerSurface({
             ?? defaultFinancialTimestampMode(entry.source.fieldId)
             ?? "",
         ]
-      : [entry.id, entry.source.kind, entry.source.seriesId]),
+      : entry.source.kind === "economic"
+        ? [entry.id, entry.source.kind, entry.source.seriesId]
+        : [entry.id, entry.source.kind, chartSeriesSourceKey(entry.source)]),
   }), [spec.series, spec.viewport.dateWindow, spec.viewport.maxPoints, spec.viewport.range, spec.viewport.resolution]);
   const [runtimeViewportState, setRuntimeViewportState] = useState<{
     key: string;

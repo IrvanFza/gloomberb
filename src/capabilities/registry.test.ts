@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { chartSeriesProvider } from "./factories";
 import { CapabilityRegistry } from "./registry";
 import { ConnectionHealthRegistry } from "../core/connection-health";
 import type { CapabilitySchema, PluginCapability } from "./types";
@@ -186,6 +187,91 @@ describe("CapabilityRegistry", () => {
     expect(events).toEqual(["first", "second"]);
     expect(disposed).toBe(2);
     expect(registry.list()).toEqual([]);
+  });
+
+  test("registers, searches, resolves, disables, and disposes chart-series providers", async () => {
+    let enabled = true;
+    const registry = new CapabilityRegistry({ isPluginEnabled: () => enabled });
+    const dispose = registry.register("charts", chartSeriesProvider({
+      id: "charts.test",
+      name: "Test Charts",
+      provider: {
+        search: ({ query }) => [{ seriesId: "one", label: `Result ${query}` }],
+        resolve: ({ seriesId }) => ({
+          id: seriesId,
+          label: "Resolved",
+          color: "#fff",
+          unit: "value",
+          unitGroup: "value",
+          nativeFrequency: "daily",
+          dataShape: "scalar",
+          style: "line",
+          transform: "raw",
+          axis: "left",
+          panelId: "main",
+          interpolation: "none",
+          points: [{ date: new Date("2026-01-01"), observedAt: new Date("2026-01-01"), value: 1 }],
+        }),
+      },
+    }));
+
+    await expect(registry.invoke<any[]>("charts.test", "search", { query: "x" }))
+      .resolves.toEqual([{ seriesId: "one", label: "Result x" }]);
+    await expect(registry.invoke<any>("charts.test", "resolve", {
+      seriesId: "one",
+      viewport: { range: "1M", resolution: "auto" },
+    })).resolves.toMatchObject({ id: "one", points: [{ value: 1 }] });
+
+    enabled = false;
+    expect(registry.list("chart-series")).toEqual([]);
+    await expect(registry.invoke("charts.test", "search", {})).rejects.toThrow("not available");
+    enabled = true;
+    dispose();
+    await expect(registry.invoke("charts.test", "search", {})).rejects.toThrow("not available");
+  });
+
+  test("rejects unsafe chart-series requests and provider output before rendering", async () => {
+    const registry = new CapabilityRegistry();
+    registry.register("charts", chartSeriesProvider({
+      id: "charts.unsafe",
+      name: "Unsafe Charts",
+      provider: {
+        catalog: () => [{ seriesId: "ok", label: "x".repeat(161) }],
+        resolve: ({ seriesId }) => ({
+          id: seriesId,
+          label: "Unsafe",
+          color: "#ffffff",
+          unit: "value",
+          unitGroup: "value",
+          nativeFrequency: "daily",
+          dataShape: "scalar",
+          style: "line",
+          transform: "raw",
+          axis: "left",
+          panelId: "main",
+          interpolation: "none",
+          points: [{ date: new Date("invalid"), observedAt: new Date(), value: 1 }],
+        }),
+      },
+    }));
+
+    await expect(registry.invoke("charts.unsafe", "catalog", { query: "x".repeat(201), limit: 8 }, { renderer: true }))
+      .rejects.toThrow("catalog query");
+    await expect(registry.invoke("charts.unsafe", "catalog", { query: "x", limit: 8 }, { renderer: true }))
+      .rejects.toThrow("catalog item 0 label");
+    await expect(registry.invoke("charts.unsafe", "resolve", {
+      seriesId: "bad?query",
+      viewport: { range: "1M", resolution: "auto" },
+    }, { renderer: true })).rejects.toThrow("series ID");
+    await expect(registry.invoke("charts.unsafe", "resolve", {
+      seriesId: "safe-id",
+      parameters: {},
+      viewport: { range: "1M", resolution: "auto" },
+    }, { renderer: true })).rejects.toThrow('unsupported field "parameters"');
+    await expect(registry.invoke("charts.unsafe", "resolve", {
+      seriesId: "safe-id",
+      viewport: { range: "1M", resolution: "auto" },
+    }, { renderer: true })).rejects.toThrow("point 0 date");
   });
 
   test("disposes subscriptions that finish after their capability is removed", async () => {

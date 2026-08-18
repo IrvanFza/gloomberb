@@ -7,6 +7,7 @@ import {
 import type { BrokerAdapter } from "../../types/broker";
 import {
   CapabilityRegistry,
+  type CapabilityManifest,
   type NewsCapability,
   type PluginCapability,
 } from "../../capabilities";
@@ -68,6 +69,13 @@ interface PluginRegistryOptions {
   enableCapabilityHandlers?: boolean;
   wrapBrokerAdapter?: (broker: BrokerAdapter, pluginId: string) => BrokerAdapter;
   connectionHealth?: ConnectionHealthRegistry;
+  remoteCapabilityManifests?: () => CapabilityManifest[];
+  remoteCapabilityInvoke?: <T>(
+    capabilityId: string,
+    operationId: string,
+    payload: unknown,
+    options?: { signal?: AbortSignal },
+  ) => Promise<T>;
 }
 
 export type WindowEditMode = "move" | "resize";
@@ -92,6 +100,13 @@ export class PluginRegistry implements PluginRuntimeAccess {
   readonly persistence: AppPersistencePort;
   private readonly enableCapabilityHandlers: boolean;
   private readonly wrapBrokerAdapter?: (broker: BrokerAdapter, pluginId: string) => BrokerAdapter;
+  private readonly remoteCapabilityManifests?: () => CapabilityManifest[];
+  private readonly remoteCapabilityInvoke?: <T>(
+    capabilityId: string,
+    operationId: string,
+    payload: unknown,
+    options?: { signal?: AbortSignal },
+  ) => Promise<T>;
 
   getTickerFn: ((symbol: string) => TickerRecord | null) = () => null;
   getDataFn: ((symbol: string) => TickerFinancials | null) = () => null;
@@ -121,6 +136,18 @@ export class PluginRegistry implements PluginRuntimeAccess {
   getMarketData = () => this.marketData;
   getConnectionHealth = () => this.connectionHealth;
   getCapability = (capabilityId: string) => this.capabilities.get(capabilityId)?.capability ?? null;
+  capabilityManifests = (kind?: string) => (this.remoteCapabilityManifests?.() ?? this.capabilities.manifests({ rendererOnly: true }))
+    .filter((manifest) => !kind || manifest.kind === kind);
+  invokeCapability = <T = unknown>(
+    capabilityId: string,
+    operationId: string,
+    payload: unknown,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<T> => (
+    this.remoteCapabilityInvoke
+      ? this.remoteCapabilityInvoke<T>(capabilityId, operationId, payload, options)
+      : this.capabilities.invoke<T>(capabilityId, operationId, payload, { renderer: true, signal: options.signal })
+  );
   getBrokerAdapter = (brokerType: string) => this.contributions.brokersMap.get(brokerType) ?? null;
   connectBrokerInstance = (instanceId: string) => this.connectBrokerInstanceFn(instanceId);
   updateBrokerInstance = (instanceId: string, values: Record<string, unknown>, options?: BrokerInstanceUpdateOptions) => (
@@ -203,6 +230,8 @@ export class PluginRegistry implements PluginRuntimeAccess {
     this.persistence = persistence;
     this.enableCapabilityHandlers = options.enableCapabilityHandlers ?? true;
     this.wrapBrokerAdapter = options.wrapBrokerAdapter;
+    this.remoteCapabilityManifests = options.remoteCapabilityManifests;
+    this.remoteCapabilityInvoke = options.remoteCapabilityInvoke;
     this.events = new EventBus();
     this.contributions = new RegistryContributions({
       wrapPaneDef: (pluginId, pane) => wrapPaneDefWithRuntime(pluginId, pane, this),

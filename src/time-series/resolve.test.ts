@@ -5,6 +5,8 @@ import type { TickerFinancials } from "../types/financials";
 import { CHART_SPEC_VERSION, type ChartSpec } from "./types";
 import { ChartResolveCache, mergePriceHistoryWindows, resolveChartSpecData } from "./resolve";
 import { chartQuoteOverrideKeyForSource } from "./live-quotes";
+import { chartSeriesSourceKey } from "../capabilities";
+import { buildCustomChartPreset } from "../plugins/builtin/chart-composer/presets";
 
 const emptyFinancials = (): TickerFinancials => ({
   annualStatements: [],
@@ -24,6 +26,143 @@ const fredLoad = (
 });
 
 describe("resolveChartSpecData", () => {
+  test("routes futures and Treasury aliases through the existing market and FRED pipelines", async () => {
+    const marketRequests: string[] = [];
+    const fredRequests: string[] = [];
+    const provider = createTestDataProvider({
+      getTickerFinancials: async () => emptyFinancials(),
+      getPriceHistoryForResolution: async (symbol) => {
+        marketRequests.push(symbol);
+        return [{ date: new Date("2026-02-01T00:00:00Z"), close: 6_100 }];
+      },
+    });
+
+    const result = await resolveChartSpecData(
+      buildCustomChartPreset("FUT:ES, UST:10Y"),
+      {
+        dataProvider: provider,
+        now: new Date("2026-03-01T00:00:00Z"),
+        loadFredSeries: async ({ seriesId }) => {
+          fredRequests.push(seriesId);
+          return fredLoad({
+            observations: [{ date: "2026-02-01", value: 4.25 }],
+            info: null,
+          });
+        },
+      },
+    );
+
+    expect(result.errors).toEqual([]);
+    expect(marketRequests).toEqual(["ES=F"]);
+    expect(fredRequests).toEqual(["DGS10"]);
+    expect(result.series.map((series) => series.points[0]?.value ?? series.points[0]?.close))
+      .toEqual([6_100, 4.25]);
+  });
+
+  test("keeps missing capability series visible with a useful error and resolves them through the injected boundary", async () => {
+    const spec: ChartSpec = {
+      version: CHART_SPEC_VERSION,
+      viewport: { range: "1M", resolution: "auto" },
+      panels: [{ id: "main" }],
+      series: [{
+        id: "plugin-series",
+        source: { kind: "capability", capabilityId: "charts.test", seriesId: "one" },
+        style: "area",
+        transform: "raw",
+        axis: "auto",
+        panelId: "main",
+        interpolation: "none",
+      }],
+      studies: [],
+    };
+    const sources = { dataProvider: null, loadFredSeries: async () => fredLoad(), now: new Date("2026-02-01") };
+    const missing = await resolveChartSpecData(spec, sources);
+    expect(missing.series).toHaveLength(1);
+    expect(missing.series[0]?.points).toEqual([]);
+    expect(missing.errors[0]).toContain('Chart series capability "charts.test" is unavailable');
+
+    const resolved = await resolveChartSpecData(spec, {
+      ...sources,
+      resolveCapabilitySeries: async () => ({
+        id: "provider-id",
+        label: "Provider Label",
+        color: "#fff",
+        unit: "value",
+        unitGroup: "value",
+        nativeFrequency: "daily",
+        dataShape: "scalar",
+        style: "line",
+        transform: "raw",
+        axis: "left",
+        panelId: "provider",
+        interpolation: "none",
+        points: [{ date: new Date("2026-01-15"), observedAt: new Date("2026-01-15"), value: 42 }],
+      }),
+    });
+    expect(resolved.errors).toEqual([]);
+    expect(resolved.series[0]).toMatchObject({ id: "plugin-series", style: "area", panelId: "main" });
+    expect(resolved.series[0]?.points[0]?.value).toBe(42);
+  });
+
+  test("resolves capability coverage for each effective panned viewport and caches by structured bounds", async () => {
+    const spec: ChartSpec = {
+      version: CHART_SPEC_VERSION,
+      viewport: { range: "1M", resolution: "auto" },
+      panels: [{ id: "main" }],
+      series: [{
+        id: "plugin-series",
+        source: { kind: "capability", capabilityId: "charts.test", seriesId: "provider/series" },
+        style: "line",
+        transform: "raw",
+        axis: "left",
+        panelId: "main",
+        interpolation: "none",
+      }],
+      studies: [],
+    };
+    const requested: ChartSpec["viewport"][] = [];
+    const cache = new ChartResolveCache();
+    const sources = {
+      dataProvider: null,
+      loadFredSeries: async () => fredLoad(),
+      now: new Date("2026-03-01T00:00:00.000Z"),
+      resolveCapabilitySeries: async (_source: any, viewport: ChartSpec["viewport"]) => {
+        requested.push(viewport);
+        const date = new Date(viewport.dateWindow!.start);
+        return {
+          id: "provider",
+          label: "Provider",
+          color: "#ffffff",
+          unit: "value",
+          unitGroup: "value",
+          nativeFrequency: "daily" as const,
+          dataShape: "scalar" as const,
+          style: "line" as const,
+          transform: "raw" as const,
+          axis: "left" as const,
+          panelId: "main",
+          interpolation: "none" as const,
+          points: [{ date, observedAt: date, value: 1 }],
+        };
+      },
+    };
+    const firstViewport = { start: new Date("2026-01-01T00:00:00.000Z"), end: new Date("2026-01-08T00:00:00.000Z") };
+    const secondViewport = { start: new Date("2026-02-01T00:00:00.000Z"), end: new Date("2026-02-08T00:00:00.000Z") };
+
+    await resolveChartSpecData(spec, sources, cache, { requestViewport: firstViewport });
+    const panned = await resolveChartSpecData(spec, sources, cache, { requestViewport: secondViewport });
+    await resolveChartSpecData(spec, sources, cache, { requestViewport: firstViewport });
+
+    expect(panned.series[0]?.points[0]?.date.toISOString()).toBe(secondViewport.start.toISOString());
+    expect(panned.viewport).toEqual(secondViewport);
+    expect(requested.map((viewport) => viewport.dateWindow)).toEqual([
+      { start: firstViewport.start.toISOString(), end: firstViewport.end.toISOString() },
+      { start: secondViewport.start.toISOString(), end: secondViewport.end.toISOString() },
+    ]);
+    expect(chartSeriesSourceKey({ kind: "capability", capabilityId: "a", seriesId: "b:c" }))
+      .not.toBe(chartSeriesSourceKey({ kind: "capability", capabilityId: "a-b", seriesId: "c" }));
+  });
+
   test("derives Auto fetch resolution from the finest explicit market period", async () => {
     const cases = [
       { range: "ALL" as const, periods: ["daily", "monthly"] as const, expected: "1d" },
@@ -449,8 +588,8 @@ describe("resolveChartSpecData", () => {
     expect(detailedRequests).toHaveLength(1);
     expect(detailedRequests[0]?.resolution).toBe("15m");
     expect(detailedRequests[0]?.end).toBe("2025-01-17T00:00:00.001Z");
-    expect(result.viewport?.start.toISOString()).toBe("2025-01-01T00:00:00.000Z");
-    expect(result.viewport?.end.toISOString()).toBe("2025-04-01T00:00:00.000Z");
+    expect(result.viewport?.start.toISOString()).toBe("2025-01-10T00:00:00.000Z");
+    expect(result.viewport?.end.toISOString()).toBe("2025-01-17T00:00:00.000Z");
     expect(result.series[0]?.timeBasis).toMatchObject({
       kind: "market",
       timeZone: "America/New_York",

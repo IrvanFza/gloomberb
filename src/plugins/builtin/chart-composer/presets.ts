@@ -29,6 +29,12 @@ import {
   publicTickerKey,
 } from "../../../utils/exchanges";
 import { MAX_CHART_COMPOSER_SERIES } from "./chart-spec";
+import {
+  isValidChartCapabilityId,
+  isValidChartSeriesId,
+} from "../../../capabilities/chart-series";
+import { FUTURES_CONTRACTS } from "../futures/contracts";
+import { TREASURY_MATURITIES } from "../yield-curve/treasury-data";
 
 const CHART_FIELD_IDS = {
   price: "market.ohlcv",
@@ -47,7 +53,15 @@ const CHART_FIELD_IDS = {
 
 export type ParsedSeriesExpression =
   | { kind: "security"; symbol: string; exchange?: string; fieldId: string; label?: string }
-  | { kind: "economic"; provider: "fred"; seriesId: string; label?: string };
+  | { kind: "economic"; provider: "fred"; seriesId: string; label?: string }
+  | {
+      kind: "capability";
+      capabilityId: string;
+      seriesId: string;
+      label?: string;
+      style?: SeriesStyle;
+      transform?: SeriesTransform;
+    };
 
 function normalizeBaseSymbol(value: string): string | null {
   const symbol = value.trim().toUpperCase();
@@ -91,10 +105,38 @@ export function parseSeriesExpression(value: string): ParsedSeriesExpression | n
   const trimmed = value.trim();
   if (!trimmed) return null;
   const parts = trimmed.split(":");
+  if (parts[0]?.trim().toUpperCase() === "CAP") {
+    const separator = trimmed.indexOf(":", 4);
+    if (separator < 0) return null;
+    const capabilityId = trimmed.slice(4, separator);
+    const seriesId = trimmed.slice(separator + 1);
+    return isValidChartCapabilityId(capabilityId) && isValidChartSeriesId(seriesId)
+      ? { kind: "capability", capabilityId, seriesId }
+      : null;
+  }
   if (parts[0]?.trim().toUpperCase() === "FRED") {
     const seriesId = parts.length === 2 ? parts[1]?.trim().toUpperCase() ?? "" : "";
     return /^[A-Z0-9._-]{1,80}$/.test(seriesId)
       ? { kind: "economic", provider: "fred", seriesId }
+      : null;
+  }
+  if (parts.length === 2 && parts[0]?.trim().toUpperCase() === "FUT") {
+    const code = parts[1]?.trim().toUpperCase();
+    const contract = FUTURES_CONTRACTS.find((entry) => entry.code === code);
+    return contract
+      ? { kind: "security", symbol: contract.symbol, fieldId: CHART_FIELD_IDS.price, label: contract.name }
+      : null;
+  }
+  if (parts.length === 2 && parts[0]?.trim().toUpperCase() === "UST") {
+    const maturity = parts[1]?.trim().toUpperCase();
+    const treasury = TREASURY_MATURITIES.find((entry) => entry.maturity === maturity);
+    return treasury
+      ? {
+          kind: "economic",
+          provider: "fred",
+          seriesId: treasury.seriesId,
+          label: `${treasury.maturity} Treasury Yield`,
+        }
       : null;
   }
 
@@ -136,19 +178,23 @@ export function parseChartExpression(value: string): ParsedSeriesExpression[] {
     if (parsed) return parsed;
     const display = leg.trim() || "empty series";
     throw new Error(
-      `Invalid chart series "${display}". Use SYMBOL, SYMBOL:field, or FRED:series, for example AAPL:price or FRED:CPIAUCSL.`,
+      `Invalid chart series "${display}". Use SYMBOL, SYMBOL:field, FUT:code, UST:maturity, FRED:series, or CAP:capability-id:series-id.`,
     );
   });
 }
 
 export function formatSeriesExpression(series: ChartSeriesSpec): string {
   if (series.source.kind === "economic") return `FRED:${series.source.seriesId}`;
+  if (series.source.kind === "capability") {
+    return `CAP:${series.source.capabilityId}:${series.source.seriesId}`;
+  }
   return `${publicTickerKey(series.source.instrument.symbol, series.source.instrument.exchange)}:${series.source.fieldId}`;
 }
 
 export function chartSeriesLabel(series: ChartSeriesSpec): string {
   if (series.label?.trim()) return series.label.trim();
   if (series.source.kind === "economic") return `FRED ${series.source.seriesId}`;
+  if (series.source.kind === "capability") return series.source.seriesId;
   const instrument = publicTickerKey(
     series.source.instrument.symbol,
     series.source.instrument.exchange,
@@ -221,6 +267,24 @@ export function buildSeriesSpec(
   index: number,
   overrides: Partial<Omit<ChartSeriesSpec, "id" | "source">> = {},
 ): ChartSeriesSpec {
+  if (expression.kind === "capability") {
+    const style = overrides.style ?? expression.style ?? "line";
+    return {
+      id: `${slug(expression.capabilityId)}-${slug(expression.seriesId)}-${index + 1}`,
+      source: {
+        kind: "capability",
+        capabilityId: expression.capabilityId,
+        seriesId: expression.seriesId,
+      },
+      ...(expression.label ? { label: expression.label } : {}),
+      transform: expression.transform ?? "raw",
+      axis: "auto",
+      panelId: "main",
+      ...overrides,
+      style,
+      interpolation: coerceSeriesInterpolationForStyle(style),
+    };
+  }
   if (expression.kind === "economic") {
     const style = overrides.style ?? "step";
     return {
@@ -295,7 +359,9 @@ function effectiveSeriesUnitGroup(series: ChartSeriesSpec): string {
   if (series.transform === "index100") return "index";
   return series.source.kind === "economic"
     ? `economic:${series.source.seriesId}`
-    : getTimeSeriesField(series.source.fieldId)?.unitGroup ?? series.source.fieldId;
+    : series.source.kind === "capability"
+      ? `capability:${series.source.capabilityId}`
+      : getTimeSeriesField(series.source.fieldId)?.unitGroup ?? series.source.fieldId;
 }
 
 function nextGeneratedPanelId(
