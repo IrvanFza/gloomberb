@@ -30,6 +30,7 @@ import type {
   KalshiEventResponse,
   KalshiEventsResponse,
   KalshiOrderbookResponse,
+  KalshiSeriesResponse,
   KalshiTradesResponse,
 } from "./types";
 
@@ -38,6 +39,13 @@ export { normalizeKalshiMarket } from "./normalize";
 const KALSHI_EVENT_PAGE_LIMIT = 200;
 const DEFAULT_KALSHI_EVENT_MAX_PAGES = 3;
 const SEARCH_KALSHI_EVENT_MAX_PAGES = 3;
+
+function kalshiSeriesTickerFromEvent(eventTicker: string | undefined): string | undefined {
+  const trimmed = eventTicker?.trim().toUpperCase();
+  if (!trimmed) return undefined;
+  const withoutDateSuffix = trimmed.replace(/-[0-9].*$/, "");
+  return withoutDateSuffix || trimmed;
+}
 
 function buildKalshiCatalogUrl(cursor?: string, category?: string, limit = KALSHI_EVENT_PAGE_LIMIT): string {
   const url = new URL("https://api.elections.kalshi.com/trade-api/v2/events");
@@ -268,6 +276,24 @@ export async function loadKalshiHistory(
   }
 }
 
+async function loadKalshiSeriesSettlement(
+  seriesTicker: string | undefined,
+): Promise<string | undefined> {
+  const ticker = seriesTicker?.trim();
+  if (!ticker) return undefined;
+  try {
+    const response = await fetchJson<KalshiSeriesResponse>(
+      `https://api.elections.kalshi.com/trade-api/v2/series/${encodeURIComponent(ticker)}`,
+    );
+    const names = (response.series?.settlement_sources ?? [])
+      .map((source) => source.name?.trim())
+      .filter((name): name is string => !!name);
+    return names.length > 0 ? names.join(", ") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function loadKalshiDetail(
   summary: PredictionMarketSummary,
   range: "1D" | "1W" | "1M" | "ALL",
@@ -276,11 +302,14 @@ export async function loadKalshiDetail(
     "detail",
     buildPredictionDetailResourceKey(summary.key, range),
     async () => {
-      const [event, history, book, trades] = await Promise.all([
+      const seriesTicker = summary.seriesTicker
+        || kalshiSeriesTickerFromEvent(summary.eventTicker);
+      const [event, history, book, trades, resolutionSource] = await Promise.all([
         loadKalshiEvent(summary.eventTicker),
         loadKalshiHistory(summary, range),
         loadKalshiBook(summary),
         loadKalshiTrades(summary),
+        loadKalshiSeriesSettlement(seriesTicker),
       ]);
       const eventMeta = event?.event;
       const siblings: PredictionSiblingMarket[] = (event?.markets ?? [])
@@ -306,7 +335,8 @@ export async function loadKalshiDetail(
           ...summary,
           eventLabel: event?.event?.title ?? summary.eventLabel,
           category: event?.event?.category ?? summary.category,
-          seriesTicker: event?.event?.series_ticker ?? summary.seriesTicker,
+          seriesTicker: event?.event?.series_ticker ?? seriesTicker,
+          resolutionSource: resolutionSource ?? summary.resolutionSource,
           tags: summary.tags?.length
             ? summary.tags
             : event?.event?.category
