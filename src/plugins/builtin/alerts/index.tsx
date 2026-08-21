@@ -102,13 +102,14 @@ export const alertsPlugin: GloomPlugin = {
 
       // One batched pass over the distinct symbols: the alerts pane reads the same
       // persisted store, so this is the only place that talks to the provider.
-      const symbols = [...new Set(activeAlerts.map((alert) => alert.symbol))];
-      const results = await Promise.all(symbols.map(async (symbol): Promise<[string, Quote | string]> => {
+      const quoteKeys = [...new Set(activeAlerts.map((alert) => `${alert.symbol}\0${alert.exchange ?? ""}`))];
+      const results = await Promise.all(quoteKeys.map(async (key): Promise<[string, Quote | string]> => {
+        const [symbol, exchange = ""] = key.split("\0");
         try {
-          return [symbol, await resolveAlertQuote(ctx.marketData, symbol)];
+          return [key, await resolveAlertQuote(ctx.marketData, symbol ?? "", exchange)];
         } catch (err) {
-          ctx.log.warn("poll: no quote", { symbol, error: String(err) });
-          return [symbol, createQuoteErrorMessage(symbol, err)];
+          ctx.log.warn("poll: no quote", { symbol, exchange, error: String(err) });
+          return [key, createQuoteErrorMessage(symbol ?? "", err)];
         }
       }));
       const quotes = new Map<string, Quote | string>(results);
@@ -116,7 +117,7 @@ export const alertsPlugin: GloomPlugin = {
       let changed = false;
       for (const alert of alerts) {
         if (alert.status !== "active") continue;
-        const quote = quotes.get(alert.symbol);
+        const quote = quotes.get(`${alert.symbol}\0${alert.exchange ?? ""}`);
         if (quote === undefined) continue;
         if (typeof quote === "string") {
           Object.assign(alert, quoteErrorAlertFields(quote));

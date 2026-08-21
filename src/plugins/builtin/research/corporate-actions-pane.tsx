@@ -23,6 +23,7 @@ import { useResolvedEntryValue, useSecFilingDocuments, useSecFilingsQuery } from
 import { instrumentFromTicker } from "../../../market-data/request-types";
 import { usePaneTicker } from "../../../state/app/context";
 import { isUsEquityTicker } from "../../../utils/sec";
+import { computeTTM } from "../ticker-detail/financials/aggregation";
 import { useAssetData } from "../../runtime";
 import { handleRefreshKey, loadingErrorFooterInfo } from "../shared/table-pane";
 import { useBoundTicker as useSymbolBinding, useTickerRequest } from "../shared/ticker-request";
@@ -241,16 +242,8 @@ function estimateValue(pair: EstimatePair): string {
 
 function ttmRow(quarterlyStatements: readonly FinancialStatement[]): EventRow | null {
   const latestFour = quarterlyStatements.slice(-4);
-  if (latestFour.length < 4) return null;
-  const fiscalRevenue = latestFour.reduce<number | undefined>((total, statement) => {
-    if (statement.totalRevenue == null) return total;
-    return (total ?? 0) + statement.totalRevenue;
-  }, undefined);
-  const fiscalEps = latestFour.reduce<number | undefined>((total, statement) => {
-    if (statement.eps == null) return total;
-    return (total ?? 0) + statement.eps;
-  }, undefined);
-  if (fiscalRevenue == null && fiscalEps == null) return null;
+  const ttm = computeTTM([...quarterlyStatements]);
+  if (!ttm || (ttm.totalRevenue == null && ttm.eps == null)) return null;
   const latest = latestFour.at(-1);
   return {
     id: `ttm:${latest?.date ?? ""}`,
@@ -258,8 +251,8 @@ function ttmRow(quarterlyStatements: readonly FinancialStatement[]): EventRow | 
     status: "TTM",
     period: "4 qtrs",
     detail: "sum",
-    annualEps: fiscalEps,
-    annualRevenue: fiscalRevenue,
+    annualEps: ttm.eps,
+    annualRevenue: ttm.totalRevenue,
     value: "-",
     tone: "muted",
   };

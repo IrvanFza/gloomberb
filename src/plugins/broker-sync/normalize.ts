@@ -80,11 +80,41 @@ function uniqueSnapshot(accounts: BrokerAccount[], positions: BrokerPosition[]):
       currency: position.currency,
     });
   }
-  const uniquePositions = [...new Map(positions.map((position) => [
-    `${position.accountId ?? ""}:${position.ticker}:${position.assetCategory ?? ""}`,
-    position,
-  ])).values()];
-  return { accounts: uniqueAccounts, positions: uniquePositions };
+  return { accounts: uniqueAccounts, positions: mergeIdenticalPositions(positions) };
+}
+
+function mergeIdenticalPositions(positions: BrokerPosition[]): BrokerPosition[] {
+  const merged = new Map<string, BrokerPosition>();
+  for (const position of positions) {
+    const key = [
+      position.accountId ?? "",
+      position.ticker,
+      position.assetCategory ?? "",
+      position.exchange ?? "",
+      position.brokerContract?.conId ?? "",
+    ].join(":");
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, position);
+      continue;
+    }
+    const shares = existing.shares + position.shares;
+    const existingCost = (existing.avgCost ?? 0) * existing.shares;
+    const nextCost = (position.avgCost ?? 0) * position.shares;
+    merged.set(key, {
+      ...existing,
+      shares,
+      avgCost: shares > 0 ? (existingCost + nextCost) / shares : existing.avgCost,
+      marketValue: sumOptional(existing.marketValue, position.marketValue),
+      unrealizedPnl: sumOptional(existing.unrealizedPnl, position.unrealizedPnl),
+    });
+  }
+  return [...merged.values()];
+}
+
+function sumOptional(left?: number, right?: number): number | undefined {
+  if (left == null && right == null) return undefined;
+  return (left ?? 0) + (right ?? 0);
 }
 
 export function normalizeRobinhoodSnapshot(accountsPayload: unknown, positionsPayload: unknown): BrokerPortfolioSnapshot {

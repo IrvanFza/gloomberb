@@ -215,6 +215,9 @@ export class GloomberbCloudProvider implements AssetDataProvider {
         })),
         options.forceRefresh ? "refresh" : "cache-first",
       );
+      if (isStaleCloudResponse(response)) {
+        throw createProviderMiss("Cloud financials are stale");
+      }
       const payload = unwrapRequiredCloudResponse(response, "Cloud financials are unavailable");
       return payload.items.map((item, index) => {
         const target = targets[index] ?? {
@@ -266,6 +269,9 @@ export class GloomberbCloudProvider implements AssetDataProvider {
         })),
         options.forceRefresh ? "refresh" : "cache-first",
       );
+      if (isStaleCloudResponse(response)) {
+        throw createProviderMiss("Cloud quotes are stale");
+      }
       const payload = unwrapRequiredCloudResponse(response, "Cloud quotes are unavailable");
       return payload.items.map((item, index) => {
         const target = targets[index] ?? {

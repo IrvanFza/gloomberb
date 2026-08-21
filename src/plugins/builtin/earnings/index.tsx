@@ -177,9 +177,11 @@ function EarningsCalendarPane({ focused, width, height }: PaneProps) {
       emptyStateTitle={
         loading
           ? "Loading earnings..."
-          : tickerSymbols.length === 0
-            ? "No tickers in scope."
-            : "No upcoming earnings found"
+          : error && events.length === 0
+            ? error
+            : tickerSymbols.length === 0
+              ? "No tickers in scope."
+              : "No upcoming earnings found"
       }
     />
   );
