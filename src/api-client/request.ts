@@ -27,7 +27,11 @@ declare const __GLOOMBERB_API_URL__: string | undefined;
 function getCloudApiBaseUrl(): string {
   // Browser bundles have no `process`; the build replaces this with a literal.
   const bundled = typeof __GLOOMBERB_API_URL__ === "string" ? __GLOOMBERB_API_URL__ : "";
-  if (bundled) return bundled;
+  if (bundled) {
+    return typeof location !== "undefined" && bundled === location.origin
+      ? `${bundled}/api`
+      : bundled;
+  }
   if (typeof process === "undefined") {
     return DEFAULT_API_URL;
   }
