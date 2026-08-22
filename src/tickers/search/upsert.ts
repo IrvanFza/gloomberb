@@ -8,6 +8,7 @@ import {
   getSearchResultSymbol,
   shouldReplaceTickerName,
 } from "./result";
+import { canonicalExchange } from "../../utils/exchanges";
 
 export async function upsertTickerFromSearchResult(
   tickerRepository: AppTickerRepositoryPort,
@@ -69,6 +70,15 @@ function mergeTickerMetadataFromSearchResult(metadata: TickerMetadata, result: I
   }
   if (nextExchange && !metadata.exchange) {
     metadata.exchange = nextExchange;
+    changed = true;
+  } else if (
+    nextExchange
+    && metadata.exchange
+    && canonicalExchange(nextExchange) !== canonicalExchange(metadata.exchange)
+  ) {
+    metadata.exchange = nextExchange;
+    if (nextName) metadata.name = nextName;
+    if (nextCurrency) metadata.currency = nextCurrency;
     changed = true;
   }
   if (nextCurrency && !metadata.currency) {

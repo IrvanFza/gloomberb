@@ -197,6 +197,7 @@ function renderCell(
 export function DividendYieldPane({ focused, width, height }: { focused: boolean; width: number; height: number }) {
   const { symbol, ticker, financials } = usePaneTicker();
   const currency = ticker?.metadata.currency ?? "USD";
+  const exchange = ticker?.metadata.exchange ?? "";
   const quotePrice = financials?.quote?.price ?? null;
 
   const [data, setData] = useState<DividendData | null>(null);
@@ -206,13 +207,13 @@ export function DividendYieldPane({ focused, width, height }: { focused: boolean
   const [selectedIdx, setSelectedIdx] = useState(0);
   const fetchGenRef = useRef(0);
 
-  const load = useCallback(async (sym: string, price: number | null) => {
+  const load = useCallback(async (sym: string, price: number | null, listingExchange = "") => {
     fetchGenRef.current += 1;
     const gen = fetchGenRef.current;
     setLoading(true);
     setError(null);
     try {
-      const result = await fetchDividendData(sym, price);
+      const result = await fetchDividendData(sym, price, listingExchange);
       if (fetchGenRef.current !== gen) return;
       setData(result);
       setSelectedIdx(0);
@@ -237,12 +238,12 @@ export function DividendYieldPane({ focused, width, height }: { focused: boolean
       setLoading(false);
       return;
     }
-    void load(symbol, quotePriceRef.current);
-  }, [load, symbol]);
+    void load(symbol, quotePriceRef.current, exchange);
+  }, [exchange, load, symbol]);
 
   const refresh = useCallback(() => {
-    if (symbol) void load(symbol, quotePriceRef.current);
-  }, [load, symbol]);
+    if (symbol) void load(symbol, quotePriceRef.current, exchange);
+  }, [exchange, load, symbol]);
 
   usePaneFooter("dividend-yield", () => ({
     info: loadingErrorFooterInfo(loading, error),

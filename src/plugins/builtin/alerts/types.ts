@@ -6,6 +6,7 @@ export type AlertStatus = "active" | "triggered" | "expired";
 export interface AlertRule {
   id: string;
   symbol: string;
+  exchange?: string;
   condition: AlertCondition;
   targetPrice: number;
   createdAt: number;

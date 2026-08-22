@@ -2,10 +2,16 @@ import type { AlertCondition, AlertRule } from "./types";
 
 export type { AlertRule };
 
-export function createAlert(symbol: string, condition: AlertCondition, targetPrice: number): AlertRule {
+export function createAlert(
+  symbol: string,
+  condition: AlertCondition,
+  targetPrice: number,
+  exchange?: string,
+): AlertRule {
   return {
     id: `alert-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
     symbol: symbol.toUpperCase(),
+    exchange: exchange?.trim() || undefined,
     condition,
     targetPrice,
     createdAt: Date.now(),

@@ -82,7 +82,8 @@ export function QuoteMonitorCard({
   const flashDirection = useQuoteFlashDirection(flashFinancials, valueFlashingEnabled);
   const display = getActiveQuoteDisplay(quote);
   const quoteStatus = resolveQuoteStatus(quoteEntry, symbol);
-  const changeColor = priceColor(display?.change ?? 0);
+  const quoteFailed = quoteStatus.failed && !!display;
+  const changeColor = quoteFailed ? colors.textDim : priceColor(display?.change ?? 0);
   const priceAttributes = flashDirection ? TextAttributes.DIM : TextAttributes.BOLD;
   const changeAttributes = flashDirection ? TextAttributes.DIM : TextAttributes.NONE;
   const currency = quote?.currency ?? ticker?.metadata.currency ?? "USD";
@@ -192,7 +193,12 @@ export function QuoteMonitorCard({
             <Text attributes={TextAttributes.BOLD} fg={colors.textBright} style={desktopSymbolStyle}>
               {symbol}
             </Text>
-            {ticker?.metadata.name && (
+            {quoteFailed && (
+              <Text fg={colors.negative} style={{ fontSize: "12px", lineHeight: "14px" }}>
+                {quoteStatus.text}
+              </Text>
+            )}
+            {!quoteFailed && ticker?.metadata.name && (
               <Text
                 fg={colors.textDim}
                 style={{

@@ -1,3 +1,5 @@
+import { canonicalExchange } from "../../utils/exchanges";
+
 const EXCHANGE_SUFFIX_MAP: Record<string, string> = {
   NASDAQ: "", NMS: "", NYSE: "", AMEX: "", ARCA: "", NYSEArca: "", BATS: "", BYX: "", IEX: "", PINK: "", OTC: "",
   TSX: ".TO", VENTURE: ".V", CSE2: ".CN", CNSX: ".CN",
@@ -46,17 +48,19 @@ const KNOWN_SUFFIXES = new Set(
 
 export function getYahooSymbol(ticker: string, exchange: string): string {
   if (tickerHasYahooSuffix(ticker)) return ticker;
-  const suffix = EXCHANGE_SUFFIX_MAP[exchange] ?? "";
-  return `${normalizeYahooTicker(ticker, exchange)}${suffix}`;
+  const canonical = canonicalExchange(exchange) || exchange;
+  const suffix = EXCHANGE_SUFFIX_MAP[canonical] ?? EXCHANGE_SUFFIX_MAP[exchange] ?? "";
+  return `${normalizeYahooTicker(ticker, canonical)}${suffix}`;
 }
 
 export function getYahooSymbolsToTry(ticker: string, exchange: string): string[] {
   if (tickerHasYahooSuffix(ticker)) return [ticker];
 
-  const normalized = normalizeYahooTicker(ticker, exchange);
+  const canonical = canonicalExchange(exchange) || exchange;
+  const normalized = normalizeYahooTicker(ticker, canonical);
   const dotVariant = normalized.includes(".") ? normalized.replace(/\./g, "-") : null;
 
-  if (!exchange) {
+  if (!canonical) {
     const symbols = new Set<string>();
     const candidates = [normalized];
     if (dotVariant) candidates.unshift(dotVariant);
@@ -69,16 +73,16 @@ export function getYahooSymbolsToTry(ticker: string, exchange: string): string[]
     return Array.from(symbols);
   }
 
-  const fallbacks = EXCHANGE_FALLBACKS[exchange];
+  const fallbacks = EXCHANGE_FALLBACKS[canonical] ?? EXCHANGE_FALLBACKS[exchange];
   if (fallbacks) {
     const results = fallbacks.map((suffix) => `${normalized}${suffix}`);
     if (dotVariant) results.unshift(...fallbacks.map((suffix) => `${dotVariant}${suffix}`));
     return results;
   }
 
-  const primary = getYahooSymbol(ticker, exchange);
+  const primary = getYahooSymbol(ticker, canonical);
   if (dotVariant) {
-    const suffix = EXCHANGE_SUFFIX_MAP[exchange] ?? "";
+    const suffix = EXCHANGE_SUFFIX_MAP[canonical] ?? EXCHANGE_SUFFIX_MAP[exchange] ?? "";
     return [`${dotVariant}${suffix}`, primary];
   }
   return [primary];
@@ -98,5 +102,6 @@ function normalizeYahooTicker(ticker: string, exchange: string): string {
 }
 
 function isHongKongExchange(exchange: string): boolean {
-  return exchange === "HKEX" || exchange === "SEHK" || exchange === "HKG";
+  const canonical = canonicalExchange(exchange) || exchange;
+  return canonical === "HKEX" || canonical === "SEHK" || canonical === "HKG";
 }

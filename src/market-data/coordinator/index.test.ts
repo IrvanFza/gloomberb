@@ -810,8 +810,8 @@ describe("MarketDataCoordinator", () => {
         },
       );
 
-      expect(coordinator.getQuoteEntry(instrument).data).toBeNull();
-      expect(coordinator.getQuoteEntry(instrument).lastGoodData?.price).toBe(598);
+      expect(coordinator.getQuoteEntry(instrument).data?.price).toBe(598);
+      expect(coordinator.getQuoteEntry(instrument).data?.providerId).toBe("yahoo");
       expect(coordinator.getTickerFinancialsSync(instrument)?.quote?.price).toBe(598);
       expect(coordinator.getTickerFinancialsSync(instrument)?.quote?.providerId).toBe("yahoo");
     } finally {

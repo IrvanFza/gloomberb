@@ -108,6 +108,35 @@ describe("broker authentication boundaries", () => {
     ])).toThrow("read-only get_equity_positions");
   });
 
+  test("aggregates identical same-account lots instead of keeping only the last row", () => {
+    const snapshot = normalizeRobinhoodSnapshot(
+      { accounts: [{ account_number: "RH-1", currency: "USD" }] },
+      { positions: [
+        {
+          accountNumber: "RH-1",
+          instrument: { symbol: "HOOD" },
+          quantity: "2",
+          total_cost: "80",
+          market_value: "100",
+        },
+        {
+          accountNumber: "RH-1",
+          instrument: { symbol: "HOOD" },
+          quantity: "3",
+          total_cost: "150",
+          market_value: "150",
+        },
+      ] },
+    );
+
+    expect(snapshot.positions).toEqual([expect.objectContaining({
+      ticker: "HOOD",
+      shares: 5,
+      avgCost: 46,
+      marketValue: 250,
+    })]);
+  });
+
   test("SimpleFIN accepts URL-safe setup tokens and rejects non-HTTPS claims", () => {
     const claimUrl = "https://bridge.simplefin.org/simplefin/claim/demo";
     const token = Buffer.from(claimUrl).toString("base64url");
