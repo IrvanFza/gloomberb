@@ -155,13 +155,11 @@ export function hydrateChannelRuntimeState({
   messages,
   persistedChannel,
   userId,
-  sessionToken,
 }: {
   channel: ChannelRuntimeState;
   messages: ChatMessage[];
   persistedChannel: PersistedChannelState | null;
   userId: string | null;
-  sessionToken: string | null;
 }): void {
   channel.draft = persistedChannel?.draft ?? "";
   channel.draftClientMessageId = channel.draft.trim()
@@ -170,7 +168,7 @@ export function hydrateChannelRuntimeState({
   channel.replyToId = persistedChannel?.replyToId ?? null;
   channel.messages = messages;
   channel.lastCursor = resolveHydratedCursor(messages, persistedChannel?.lastCursor ?? null);
-  channel.lastViewedMessageId = userId && sessionToken
+  channel.lastViewedMessageId = userId
     ? persistedChannel?.lastViewedMessageId ?? getLatestMessageId(messages)
     : null;
 }

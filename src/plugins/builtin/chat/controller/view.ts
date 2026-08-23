@@ -16,7 +16,7 @@ interface ChatControllerViewOptions {
   getChannelStateSnapshots: () => ChatChannelState[];
   isChannelsLoading: () => boolean;
   isSessionChecked: () => boolean;
-  hasSessionToken: () => boolean;
+  hasSession: () => boolean;
   getOnlineCount: () => number;
   getUser: () => ChatControllerSnapshot["user"];
   getListenerSnapshot: (channelId: string) => ChatControllerSnapshot;
@@ -69,7 +69,7 @@ export class ChatControllerView {
       messagesError: channel.messagesError,
       loadingOlderMessages: channel.olderMessagesLoading,
       hasOlderMessages: channel.messages.length > 0 && !channel.reachedOldestMessage,
-      hasSavedSession: this.options.hasSessionToken(),
+      hasSavedSession: this.options.hasSession(),
       onlineCount: this.options.getOnlineCount(),
       user: this.options.getUser(),
       messages: this.options.getVisibleMessages(normalizedChannelId),
