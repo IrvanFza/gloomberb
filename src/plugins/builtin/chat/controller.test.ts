@@ -93,6 +93,7 @@ beforeEach(() => {
 afterEach(() => {
   apiClient.dispose();
   apiClient.setSessionToken(null);
+  apiClient.setCookieSessionMode(false);
   apiClient.connectChannel = originalConnectChannel;
   apiClient.getSession = originalGetSession;
   apiClient.getMessages = originalGetMessages;
@@ -145,6 +146,47 @@ describe("ChatController", () => {
     expect(snapshot.draft).toBe("cached draft");
     expect(snapshot.replyToId).toBe("m1");
     expect(snapshot.messages.map((entry) => entry.id)).toEqual(["m1"]);
+  });
+
+  test("uses a browser cookie session without exposing its token", async () => {
+    const persistence = new MemoryPersistence();
+    const controller = new ChatController();
+    const sentMessages: string[] = [];
+
+    apiClient.setCookieSessionMode(true);
+    apiClient.restoreCachedUser({
+      id: "u1",
+      username: "vince",
+      emailVerified: true,
+    });
+    apiClient.getSession = async () => apiClient.getCurrentUser();
+    apiClient.connectChannel = () => ({
+      send: async (content) => {
+        sentMessages.push(content);
+        return {
+          id: "m1",
+          channelId: "everyone",
+          content,
+          replyToId: null,
+          createdAt: "2026-08-23T00:00:00.000Z",
+          user: { id: "u1", username: "vince", displayName: "Vince" },
+        };
+      },
+      close: () => {},
+    });
+
+    controller.attachPersistence(persistence);
+    await controller.refreshSession();
+
+    expect(apiClient.getSessionToken()).toBeNull();
+    expect(controller.getSnapshot()).toMatchObject({
+      hasSavedSession: true,
+      user: { id: "u1", username: "vince", emailVerified: true },
+    });
+    expect(controller.send("hello from the browser")).toBe(true);
+    await flushMicrotasks();
+    expect(sentMessages).toEqual(["hello from the browser"]);
+    controller.dispose();
   });
 
   test("rejects unknown shortcut channels after the server list loads", async () => {
