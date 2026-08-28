@@ -3,6 +3,7 @@ import type { InstrumentSearchResult } from "../types/instrument";
 import { CloudAuthApi } from "./auth";
 import { CloudChatApi } from "./chat";
 import { CloudDataApi } from "./data";
+import { ApiRequestError } from "./errors";
 import { CloudApiRequestTransport } from "./request";
 import { CloudApiSocket } from "./socket";
 import type {
@@ -71,6 +72,13 @@ import type {
   ScannerKind,
 } from "./types";
 import type { SyncSettings, SyncSnapshot } from "../sync/types";
+import {
+  isMarketplaceLayoutId,
+  parseMarketplaceLayoutEntry,
+  parseMarketplaceLayoutList,
+  type LayoutMarketplaceEntry,
+  type LayoutMarketplacePayload,
+} from "../layout-marketplace/payload";
 
 export type * from "./types";
 export { setCloudApiFetchTransport } from "./request";
@@ -284,6 +292,14 @@ class GloomApiClient {
     return this.request<{ url: string }>("/stripe/checkout", { method: "POST", body: JSON.stringify({}) });
   }
 
+  /** Stores a verified user's public terminal snapshot or pane handoff. */
+  async createTerminalShare(payload: unknown): Promise<{ id: string; expiresAt: string }> {
+    return this.request<{ id: string; expiresAt: string }>("/shares", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
   /** Stripe billing portal for an account that already has a subscription. */
   async createBillingPortal(): Promise<{ url: string }> {
     return this.request<{ url: string }>("/stripe/portal", { method: "POST", body: JSON.stringify({}) });
@@ -321,6 +337,45 @@ class GloomApiClient {
         baseRevision: options?.baseRevision ?? null,
       }),
     });
+  }
+
+  async getMarketplaceLayout(
+    id: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<LayoutMarketplaceEntry | null> {
+    if (!isMarketplaceLayoutId(id)) return null;
+    try {
+      return parseMarketplaceLayoutEntry(await this.request<unknown>(`/layouts/${encodeURIComponent(id)}`, {
+        method: "GET",
+        signal: options?.signal,
+      }));
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  async listMarketplaceLayouts(options?: { signal?: AbortSignal }): Promise<LayoutMarketplaceEntry[]> {
+    const items = parseMarketplaceLayoutList(await this.request<unknown>("/layouts", {
+      method: "GET",
+      signal: options?.signal,
+    }));
+    if (!items) throw new Error("The layout marketplace returned invalid data.");
+    return items;
+  }
+
+  async publishMarketplaceLayout(
+    name: string,
+    payload: LayoutMarketplacePayload,
+    options?: { signal?: AbortSignal },
+  ): Promise<LayoutMarketplaceEntry> {
+    const item = parseMarketplaceLayoutEntry(await this.request<unknown>("/layouts", {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim(), ...payload }),
+      signal: options?.signal,
+    }));
+    if (!item) throw new Error("The layout marketplace returned invalid data.");
+    return item;
   }
 
   async updateSyncSettings(update: Partial<SyncSettings>): Promise<SyncSettings> {

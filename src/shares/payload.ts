@@ -1,3 +1,7 @@
+import {
+  parseMarketplaceLayoutPayload,
+  type LayoutMarketplacePayload,
+} from "../layout-marketplace/payload";
 import { safeExternalUrl } from "../utils/external-url";
 
 export const MAX_SHARE_BYTES = 128 * 1024;
@@ -7,8 +11,15 @@ const MAX_TABLE_COLUMNS = 20;
 const MAX_TABLE_ROWS = 200;
 const MAX_CHART_SERIES = 20;
 const MAX_CHART_POINTS = 500;
+const MAX_PANE_DESCRIPTION_LENGTH = 500;
+const MAX_PANE_DATA_DEPTH = 8;
+const MAX_PANE_OBJECT_KEYS = 64;
+const MAX_PANE_ARRAY_ITEMS = 5_000;
+const MAX_PANE_STRING_LENGTH = 4_096;
+const PANE_TEMPLATE_ID = /^[a-z0-9][a-z0-9._:-]{0,119}$/;
 
 type CellValue = string | number | boolean | null;
+export type ShareJsonValue = CellValue | ShareJsonValue[] | { [key: string]: ShareJsonValue };
 
 export interface TableShareData {
   title: string;
@@ -32,10 +43,28 @@ export interface ArticleShareData {
   sourceUrl?: string;
 }
 
+export interface LegacyPaneShareData {
+  version: 1;
+  templateId: string;
+  title: string;
+  description?: string;
+  data: Record<string, ShareJsonValue>;
+}
+
+export interface PortablePaneShareData {
+  version: 2;
+  title: string;
+  description?: string;
+  layout: LayoutMarketplacePayload;
+}
+
+export type PaneShareData = LegacyPaneShareData | PortablePaneShareData;
+
 export type SharePayload =
   | { kind: "table"; data: TableShareData }
   | { kind: "chart"; data: ChartShareData }
-  | { kind: "article"; data: ArticleShareData };
+  | { kind: "article"; data: ArticleShareData }
+  | { kind: "pane"; data: PaneShareData };
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -92,6 +121,46 @@ function isArticleData(value: unknown): value is ArticleShareData {
     && safeOptionalUrl(value.sourceUrl);
 }
 
+function boundedJson(value: unknown, depth = 0): value is ShareJsonValue {
+  if (value === null || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value === "string") return value.length <= MAX_PANE_STRING_LENGTH;
+  if (depth >= MAX_PANE_DATA_DEPTH) return false;
+  if (Array.isArray(value)) {
+    return value.length <= MAX_PANE_ARRAY_ITEMS && value.every((entry) => boundedJson(entry, depth + 1));
+  }
+  if (!record(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_PANE_OBJECT_KEYS && entries.every(([, entry]) => boundedJson(entry, depth + 1));
+}
+
+function parsePaneData(value: unknown): PaneShareData | null {
+  if (!record(value) || !shortString(value.title)) return null;
+  if (
+    value.version === 1
+    && Object.keys(value).every((key) => ["version", "templateId", "title", "description", "data"].includes(key))
+    && typeof value.templateId === "string"
+    && PANE_TEMPLATE_ID.test(value.templateId)
+    && (value.description === undefined || shortString(value.description, MAX_PANE_DESCRIPTION_LENGTH))
+    && record(value.data)
+    && boundedJson(value.data)
+  ) return value as unknown as LegacyPaneShareData;
+  if (
+    value.version !== 2
+    || !Object.keys(value).every((key) => ["version", "title", "description", "layout"].includes(key))
+    || (value.description !== undefined && !shortString(value.description, MAX_PANE_DESCRIPTION_LENGTH))
+  ) return null;
+  const layout = parseMarketplaceLayoutPayload(value.layout);
+  return layout?.schemaVersion === 2 && layout.layout.instances.length === 1
+    ? {
+        version: 2,
+        title: value.title,
+        ...(value.description === undefined ? {} : { description: value.description }),
+        layout,
+      }
+    : null;
+}
+
 export function parseSharePayload(value: unknown): SharePayload | null {
   if (!record(value) || !shortString(value.kind, 20) || !("data" in value)) return null;
   let json: string;
@@ -100,5 +169,9 @@ export function parseSharePayload(value: unknown): SharePayload | null {
   if (value.kind === "table" && isTableData(value.data)) return value as unknown as SharePayload;
   if (value.kind === "chart" && isChartData(value.data)) return value as unknown as SharePayload;
   if (value.kind === "article" && isArticleData(value.data)) return value as unknown as SharePayload;
+  if (value.kind === "pane") {
+    const data = parsePaneData(value.data);
+    if (data) return { kind: "pane", data };
+  }
   return null;
 }

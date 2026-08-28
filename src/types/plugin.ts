@@ -44,6 +44,18 @@ export interface PaneProps {
   close?: () => void;
 }
 
+export type PaneSharePrivateFields = true | readonly string[];
+
+export interface PanePortableShareDef {
+  /** Fields excluded before pane configuration or state leaves the device. */
+  private?: {
+    title?: boolean;
+    params?: PaneSharePrivateFields;
+    settings?: PaneSharePrivateFields;
+    state?: PaneSharePrivateFields;
+  };
+}
+
 export interface PaneDef {
   id: string;
   name: string;
@@ -56,6 +68,8 @@ export interface PaneDef {
   /** Pane publishes its selected symbol as pane-state `cursorSymbol`, so ticker panes can follow it. */
   tickerSource?: boolean;
   settings?: PaneSettingsDef | ((context: PaneSettingsContext) => PaneSettingsDef | null);
+  /** Portable sharing is public by default; list the few pane-owned fields that must remain local. */
+  portableShare?: PanePortableShareDef;
   /** Compact controls surfaced next to the pane title. Toggle keys reference toggle fields in settings. */
   quickSettings?: readonly PaneQuickSettingDef[];
 }
@@ -179,6 +193,8 @@ export interface PaneTemplateCreateOptions {
   symbols?: string[] | null;
   ticker?: TickerRecord | null;
   searchResult?: InstrumentSearchResult | null;
+  /** Template-owned, validated data restored from a public pane share. */
+  shareData?: unknown;
 }
 
 export interface PaneTemplateInstanceConfig {
@@ -190,6 +206,22 @@ export interface PaneTemplateInstanceConfig {
   placement?: "default" | "docked" | "floating";
   relativeToPaneId?: string;
   relativePosition?: "left" | "right" | "above" | "below";
+}
+
+export interface PaneTemplatePublicShareContext {
+  pane: PaneInstanceConfig;
+  paneState: Record<string, unknown>;
+}
+
+export interface PaneTemplatePublicShareSnapshot {
+  title: string;
+  description?: string;
+  data: Record<string, unknown>;
+}
+
+export interface PaneTemplatePublicShareDef {
+  serialize(context: PaneTemplatePublicShareContext): PaneTemplatePublicShareSnapshot | null;
+  restore(data: Record<string, unknown>): PaneTemplateCreateOptions | null;
 }
 
 export interface PaneTemplateDef {
@@ -205,6 +237,8 @@ export interface PaneTemplateDef {
     context: PaneTemplateContext,
     options?: PaneTemplateCreateOptions,
   ) => PaneTemplateInstanceConfig | null | Promise<PaneTemplateInstanceConfig | null>;
+  /** Legacy v1 restoration or an explicit transformed snapshot; normal pane shares use portableShare. */
+  publicShare?: PaneTemplatePublicShareDef;
 }
 
 export interface WizardStep {

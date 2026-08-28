@@ -218,9 +218,14 @@ export function StatusBar() {
       },
       contextMenuDivider("layout:actions-divider"),
       {
+        id: "layout:gallery",
+        label: "Browse Layouts...",
+        onSelect: () => registry?.showPane("layout-marketplace"),
+      },
+      {
         id: "layout:actions",
         label: "Layout Actions...",
-        onSelect: () => registry?.openCommandBar("LAY "),
+        onSelect: () => registry?.openCommandBar("LMA "),
       },
     );
 

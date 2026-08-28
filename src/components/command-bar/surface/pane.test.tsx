@@ -221,7 +221,7 @@ describe("CommandBar pane and layout routes", () => {
 
   test("renders layout mode with focused pane actions", async () => {
     testSetup = await testRender(<CommandBarHarness
-      query="LAY "
+      query="LMA "
       configureConfig={layoutModeConfig}
       configureState={layoutModeState}
     />, {
@@ -265,9 +265,29 @@ describe("CommandBar pane and layout routes", () => {
     expect(actions.some((action) => action.type === "UNDO_LAYOUT")).toBe(true);
   });
 
+  test("opens Layouts as a normal pane from LAY", async () => {
+    const opened: string[] = [];
+    testSetup = await testRender(
+      <CommandBarHarness
+        query="LAY"
+        live
+        configurePluginRegistry={(pluginRegistry) => {
+          pluginRegistry.showPane = (paneId) => opened.push(paneId);
+        }}
+      />,
+      { width: 90, height: 18 },
+    );
+    await testSetup.renderOnce();
+    expect(testSetup.captureCharFrame()).toContain("Layouts");
+
+    await clickFrameText("Layouts");
+
+    expect(opened).toEqual(["layout-marketplace"]);
+  });
+
   test("renders filtered saved layouts with textual previews", async () => {
     testSetup = await testRender(<CommandBarHarness
-      query="LAY Research"
+      query="LMA Research"
       configureConfig={layoutModeConfig}
       configureState={layoutModeState}
     />, {

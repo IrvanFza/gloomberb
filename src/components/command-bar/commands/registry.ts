@@ -138,8 +138,15 @@ export const commands: Command[] = [
     category: "Config",
   },
   {
-    id: "layout",
+    id: "layout-marketplace",
     prefix: "LAY",
+    label: "Layouts",
+    description: "Open the layout browser to switch, publish, or add layouts",
+    category: "Config",
+  },
+  {
+    id: "layout",
+    prefix: "LMA",
     label: "Layout Actions",
     description: "Organize panes and saved layouts",
     hasArg: true,

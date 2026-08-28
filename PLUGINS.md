@@ -333,19 +333,19 @@ const summary = ctx.persistence.getResource<string>("summary", "AAPL", {
 ctx.persistence.deleteResource("summary", "AAPL", { sourceKey: "provider" });
 ```
 
-### Resume state (session-only)
+### Resume state
 
-Transient state that is cleared on app restart. Useful for ephemeral UI state you don't want to persist:
+Plugin-global resume state persists locally across restarts and is shared by every pane instance. Use it for plugin-wide user data, shared defaults, or transient handoffs that you explicitly delete:
 
 ```typescript
-ctx.resume.setState("scroll-pos", 42);
-ctx.resume.getState<number>("scroll-pos"); // 42 (gone after restart)
-ctx.resume.deleteState("scroll-pos");
+ctx.resume.setState("last-provider", "example");
+ctx.resume.getState<string>("last-provider");
+ctx.resume.deleteState("last-provider");
 
-// Per-pane session state
-ctx.resume.setPaneState("my-pane:main", "expanded", true);
-ctx.resume.getPaneState<boolean>("my-pane:main", "expanded");
-ctx.resume.deletePaneState("my-pane:main", "expanded");
+// Per-pane state belongs to the active layout and can travel with a shared layout.
+ctx.resume.setPaneState("my-pane:main", "selectedTab", "news");
+ctx.resume.getPaneState<string>("my-pane:main", "selectedTab");
+ctx.resume.deletePaneState("my-pane:main", "selectedTab");
 ```
 
 ### Config state (persistent)
@@ -490,6 +490,28 @@ function MyPane() {
   // ...
 }
 ```
+
+### Portable pane sharing
+
+Published layouts copy a pane's title, params, settings, and per-layout pane state by default. Credentials, account and portfolio identifiers, local paths, and other sensitive key names are rejected automatically. Declare the remaining pane-specific private fields beside the pane definition:
+
+```typescript
+ctx.registerPane({
+  id: "portfolio-risk",
+  name: "Portfolio Risk",
+  component: PortfolioRiskPane,
+  defaultPosition: "right",
+  portableShare: {
+    private: {
+      params: ["portfolioId"],
+      settings: ["accountId"],
+      state: ["bankroll", "positions"],
+    },
+  },
+});
+```
+
+Use `true` instead of an array to keep a whole scope local. Set `title: true` when the title can identify a private channel or account. Plugin-global resume/config/resource state is never copied. State that should travel with a layout or pane share belongs in `usePluginPaneState()` or `usePaneSettingValue()`, not `usePluginState()`. Share Pane applies this projection automatically; `PaneTemplateDef.publicShare` remains only for old v1 links or deliberate transformed snapshots.
 
 ### Pane quick settings
 

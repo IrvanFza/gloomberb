@@ -319,7 +319,8 @@ The toolbar controls preset or exact date ranges, intervals from one minute thro
 | `AW` / `AP <ticker>` | Add a ticker to the active watchlist or portfolio |
 | `RW` / `RP <ticker>` | Remove a ticker from the active watchlist or portfolio |
 | `PS` | Open focused pane settings |
-| `LAY <action>` | Open layout actions |
+| `LAY` | Open the layout browser to switch, publish, or add layouts |
+| `LMA <query>` | Layout and pane arrangement actions |
 | `WIN move\|resize` | Move or resize the focused window |
 | `GL` | Tidy all windows |
 | `SB` | Toggle the status bar |
@@ -333,6 +334,8 @@ The toolbar controls preset or exact date ranges, intervals from one minute thro
 | `CR` | Cycle chart renderer |
 | `LANG <locale>` | Change interface language (`auto`, `en`, `es`, `zh-CN`, `zh-TW`, `ja`, or `ko`) |
 | `PL <plugin>` | Manage plugins |
+
+Published layouts preserve portable pane setup and state, including searches, chart viewport, and drawings. Credentials, accounts, portfolios, and pane fields marked private stay local. Publishing copies a durable `term.gloom.sh/l/...` link for social sharing.
 
 ## Gloom Cloud sign-in
 
