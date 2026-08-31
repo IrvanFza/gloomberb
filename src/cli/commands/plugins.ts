@@ -2,6 +2,7 @@ import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from "fs";
 import { execFileSync } from "child_process";
 import { getPluginsDir } from "../../plugins/loader";
+import { linkHostPackages } from "../../plugins/host-link";
 import {
   cliStyles,
   renderSection,
@@ -73,10 +74,21 @@ export async function installPlugin(ref: string) {
   if (existsSync(pkgPath)) {
     console.log(cliStyles.muted("Installing plugin dependencies..."));
     try {
-      execFileSync("bun", ["install"], { cwd: targetDir, stdio: "inherit" });
+      // --production: plugin repos depend on `gloomberb` as a devDependency so
+      // their own CI can typecheck against the real API. At runtime the host is
+      // symlinked in instead, and pulling a second full copy here would both
+      // waste a lot of disk and risk a duplicate React.
+      execFileSync("bun", ["install", "--production"], { cwd: targetDir, stdio: "inherit" });
     } catch {
       console.error(cliStyles.warning("Warning: failed to install plugin dependencies."));
     }
+  }
+
+  // After `bun install`, which prunes links it does not know about.
+  const link = linkHostPackages(targetDir);
+  if (link.error) {
+    console.error(cliStyles.warning(`Warning: could not link the Gloomberb runtime (${link.error}).`));
+    console.error(cliStyles.muted("The plugin's \"gloomberb/*\" imports will not resolve."));
   }
 
   try {
@@ -141,8 +153,9 @@ export async function updatePlugins(name?: string) {
       execFileSync("git", ["pull", "--ff-only"], { cwd: targetDir, stdio: "inherit" });
       const pkgPath = join(targetDir, "package.json");
       if (existsSync(pkgPath)) {
-        execFileSync("bun", ["install"], { cwd: targetDir, stdio: "inherit" });
+        execFileSync("bun", ["install", "--production"], { cwd: targetDir, stdio: "inherit" });
       }
+      linkHostPackages(targetDir);
     } catch {
       console.error(cliStyles.danger(`Failed to update ${dir}.`));
     }
