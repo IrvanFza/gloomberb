@@ -48,6 +48,8 @@ export { EmptyState, PaneStatusBody, loadingText, unavailableText } from "./ui/s
 export { getMessageComposerBlockHeight, MessageComposer } from "./ui/message-composer";
 export { NumberField, TextField } from "./ui/fields";
 export { SegmentedControl } from "./ui/toggle";
+export { SelectButton } from "./ui/select-button";
+export type { SelectButtonOption, SelectButtonProps } from "./ui/select-button";
 export { Spinner } from "./ui/loading";
 export { RemoteImage } from "./ui";
 export { Tabs } from "./ui/tabs";
