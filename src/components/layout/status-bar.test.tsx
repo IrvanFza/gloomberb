@@ -4,6 +4,7 @@ import { AppContext, createInitialState } from "../../state/app/context";
 import { cloneLayout, createDefaultConfig, createPaneInstance, type LayoutConfig } from "../../types/config";
 import type { AppNotificationRequest } from "../../types/plugin";
 import { StatusBar } from "./status-bar";
+import { VERSION } from "../../version";
 import { getDockedPaneIds } from "../../plugins/pane-manager";
 import { setSharedRegistryForTests } from "../../plugins/registry";
 import { act, useEffect, useState } from "react";
@@ -51,18 +52,18 @@ describe("StatusBar", () => {
     return null;
   }
 
-  test("opens the command bar from the shortcut hint", async () => {
+  test("opens the current version changelog from the version chip", async () => {
     const config = createDefaultConfig("/tmp/gloomberb-test");
     config.layouts = [{ name: "Home", layout: cloneLayout(config.layout) }];
     const state = {
       ...createInitialState(config),
       statusBarVisible: true,
     };
-    const actions: Array<{ type: string; open?: boolean; query?: string }> = [];
+    let openedVersion = "";
 
     testSetup = await testRender(
-      <AppContext value={{ state, dispatch: (action) => actions.push(action as { type: string; open?: boolean; query?: string }) }}>
-        <StatusBar />
+      <AppContext value={{ state, dispatch: () => {} }}>
+        <StatusBar onOpenChangelog={(version) => { openedVersion = version; }} />
       </AppContext>,
       { width: 120, height: 1 },
     );
@@ -70,13 +71,13 @@ describe("StatusBar", () => {
     await testSetup.renderOnce();
 
     const frame = testSetup.captureCharFrame();
-    const hintX = frame.split("\n")[0]?.indexOf("Ctrl+P") ?? -1;
-    expect(hintX).toBeGreaterThanOrEqual(0);
+    const versionX = frame.split("\n")[0]?.indexOf(`v${VERSION}`) ?? -1;
+    expect(versionX).toBeGreaterThanOrEqual(0);
 
-    await testSetup.mockMouse.click(hintX + 1, 0);
+    await testSetup.mockMouse.click(versionX + 1, 0);
     await testSetup.renderOnce();
 
-    expect(actions).toContainEqual({ type: "SET_COMMAND_BAR", open: true, query: "" });
+    expect(openedVersion).toBe(VERSION);
   });
 
   test("shows a transient focus layout tab without replacing saved layouts", async () => {

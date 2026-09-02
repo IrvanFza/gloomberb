@@ -54,6 +54,7 @@ interface CommandBarPanelRuntimeOptions {
   moveWorkflowFocus: (delta: number) => void;
   nativeListScrollRef: RefObject<ScrollBoxRenderable | null>;
   nativePaneChrome: boolean;
+  nativeWindowChrome?: boolean;
   onNativeOccluderChange?: (rect: LayoutBounds | null) => void;
   openWorkflowFieldPicker: OpenWorkflowFieldPicker;
   persistConfig: (nextConfig: AppState["config"]) => void;
@@ -62,7 +63,6 @@ interface CommandBarPanelRuntimeOptions {
   resetAssist: () => boolean;
   rootGhostSuffix: string | null;
   rootModeKind: string;
-  rootQueryLength: number;
   rootShortcutFeedback: string | null;
   routeListState: ListScreenState | null;
   setActiveListQuery: (query: string) => void;
@@ -107,6 +107,7 @@ export function useCommandBarPanelRuntime({
   moveWorkflowFocus,
   nativeListScrollRef,
   nativePaneChrome,
+  nativeWindowChrome,
   onNativeOccluderChange,
   openWorkflowFieldPicker,
   persistConfig,
@@ -115,7 +116,6 @@ export function useCommandBarPanelRuntime({
   resetAssist,
   rootGhostSuffix,
   rootModeKind,
-  rootQueryLength,
   rootShortcutFeedback,
   routeListState,
   setActiveListQuery,
@@ -212,6 +212,8 @@ export function useCommandBarPanelRuntime({
     cellWidthPx,
     currentRoute,
     nativePaneChrome,
+    nativeWindowChrome,
+    rootShortcutFeedback,
     routeListState,
     setRootSelectedIdx,
     showCustomMultiSelectPicker,
@@ -240,6 +242,7 @@ export function useCommandBarPanelRuntime({
     contentPadding: panelLayout.contentPadding,
     currentRoute,
     getWorkflowInputRef,
+    hasChromeRow: panelLayout.hasChromeRow,
     labelWidth: panelLayout.labelWidth,
     listBodyHeight: panelLayout.listBodyHeight,
     nativeListRows,
@@ -269,7 +272,6 @@ export function useCommandBarPanelRuntime({
     panelBounds: panelLayout.panelBounds,
     queryDisplayWidth: panelLayout.queryDisplayWidth,
     rootGhostSuffix,
-    rootQueryLength,
     rootShortcutFeedback,
     selectedScrollRowIndex,
     termHeight,

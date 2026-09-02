@@ -36,6 +36,14 @@ export interface CommandBarSection<T> {
 
 export type CommandBarSectionOrder = "default" | "app-first" | "ranked";
 
+/** Sort positions contributed by plugin search providers, keyed by section heading. */
+export type CommandBarCategoryPriorities = ReadonlyMap<string, number>;
+
+export interface CommandBarSectionOptions {
+  sectionOrder?: CommandBarSectionOrder;
+  categoryPriorities?: CommandBarCategoryPriorities;
+}
+
 export interface CommandBarItemView {
   id: string;
   label: string;
@@ -83,9 +91,10 @@ export function resolveCommandBarMode(query: string, commandList?: Command[]): C
 
 /**
  * A section whose every row is disabled or unselectable is an offer, not an
- * answer, so it sorts below real matches however its category is prioritized.
+ * answer, so it sorts below real matches however its category is prioritized:
+ * past the async bands (100 to 200) and the AI's lead, short of danger (900).
  */
-const OFFER_SECTION_DEMOTION = 200;
+const OFFER_SECTION_DEMOTION = 500;
 
 interface SectionSortableItem {
   category: string;
@@ -100,7 +109,7 @@ function isOfferOnlySection<T extends SectionSortableItem>(items: T[]): boolean 
 
 export function buildSections<T extends SectionSortableItem>(
   items: T[],
-  options?: { sectionOrder?: CommandBarSectionOrder },
+  options?: CommandBarSectionOptions,
 ): Array<CommandBarSection<T>> {
   const sections: Array<CommandBarSection<T>> = [];
   for (const item of items) {
@@ -114,9 +123,9 @@ export function buildSections<T extends SectionSortableItem>(
   return sections
     .map((section, index) => ({ section, index }))
     .sort((a, b) => {
-      const leftPriority = getCategoryPriority(a.section.category, options?.sectionOrder)
+      const leftPriority = getCategoryPriority(a.section.category, options)
         + (isOfferOnlySection(a.section.items) ? OFFER_SECTION_DEMOTION : 0);
-      const rightPriority = getCategoryPriority(b.section.category, options?.sectionOrder)
+      const rightPriority = getCategoryPriority(b.section.category, options)
         + (isOfferOnlySection(b.section.items) ? OFFER_SECTION_DEMOTION : 0);
       const priorityDiff = leftPriority - rightPriority;
       return priorityDiff !== 0 ? priorityDiff : a.index - b.index;
@@ -168,12 +177,36 @@ export function truncateText(text: string, width: number): string {
   return truncateToDisplayWidth(text, width);
 }
 
-function getCategoryPriority(category: string, sectionOrder: CommandBarSectionOrder = "default"): number {
+/**
+ * An exactly matching symbol is the most certain answer the terminal has, so
+ * nothing outranks it. Typing "sive" put the AI's "DES SIVE" above the SIVE row
+ * it was derived from, which is a guess sitting above the fact behind it.
+ */
+const EXACT_MATCH_SECTION_PRIORITY = -150;
+/**
+ * The AI leads the rest even though it is the slowest source (~600ms+): it
+ * translates the sentence the user typed into commands, which is the answer to
+ * what they asked when no symbol matched outright. Its Thinking placeholder
+ * reserves the rows from the start, so the arrival replaces a row instead of
+ * shifting the list.
+ */
+const ASSIST_SECTION_PRIORITY = -100;
+/**
+ * The other async sections sit below the local matches in arrival order, so
+ * each answer only ever pushes rows below itself: instruments at 100, then news
+ * at 190 and the rest of the corpus at 200 (both contributed by their provider).
+ */
+const INSTRUMENTS_SECTION_PRIORITY = 100;
+
+function getCategoryPriority(category: string, options?: CommandBarSectionOptions): number {
+  const contributed = options?.categoryPriorities?.get(category);
+  if (contributed !== undefined) return contributed;
+  const sectionOrder = options?.sectionOrder ?? "default";
   const normalized = category.trim().toLowerCase();
   if (sectionOrder === "ranked") return 0;
-  // The AI answers the question the user actually typed, so it leads the list.
-  if (normalized === "ask ai") return -100;
-  if (normalized === "exact match") return -50;
+  if (normalized === "ask ai") return ASSIST_SECTION_PRIORITY;
+  if (normalized === "exact match") return EXACT_MATCH_SECTION_PRIORITY;
+  if (normalized === "instruments") return INSTRUMENTS_SECTION_PRIORITY;
   if (sectionOrder === "app-first") {
     if (normalized === "saved") return 100;
     if (normalized === "primary listing") return 110;

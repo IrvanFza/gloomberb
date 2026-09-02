@@ -1,7 +1,9 @@
-import { useEffect, useMemo, type Dispatch, type SetStateAction } from "react";
+import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import {
   buildListRows,
   buildNativeListRows,
+  getListRowsHeight,
+  resolveSelectedScrollLine,
   type ListScreenState,
 } from "../list/model";
 import {
@@ -16,6 +18,8 @@ interface UseCommandBarPanelStateOptions {
   cellWidthPx: number;
   currentRoute: CommandBarRoute | null;
   nativePaneChrome: boolean;
+  nativeWindowChrome?: boolean;
+  rootShortcutFeedback: string | null;
   routeListState: ListScreenState | null;
   setRootSelectedIdx: Dispatch<SetStateAction<number>>;
   showCustomMultiSelectPicker: boolean;
@@ -32,6 +36,8 @@ export function useCommandBarPanelState({
   cellWidthPx,
   currentRoute,
   nativePaneChrome,
+  nativeWindowChrome,
+  rootShortcutFeedback,
   routeListState,
   setRootSelectedIdx,
   showCustomMultiSelectPicker,
@@ -84,20 +90,24 @@ export function useCommandBarPanelState({
   );
   const listRowIndexByGlobalIndex = useMemo(() => {
     const indexByGlobalIndex = new Map<number, number>();
-    listRows.forEach((row, index) => {
+    nativeListRows.forEach((row, index) => {
       if (row.kind === "item") {
         indexByGlobalIndex.set(row.globalIdx, index);
       }
     });
     return indexByGlobalIndex;
-  }, [listRows]);
+  }, [nativeListRows]);
+
+  const hasRootFeedback = visibleListState?.kind === "root" && rootShortcutFeedback !== null;
   const panelLayout = useMemo(() => resolveCommandBarPanelLayout({
     cellHeightPx,
     cellWidthPx,
     currentRoute,
+    hasRootFeedback,
     hasVisibleListState,
-    nativeListRowCount: nativeListRows.length,
+    nativeListRowCount: getListRowsHeight(nativeListRows),
     nativePaneChrome,
+    nativeWindowChrome,
     showCustomMultiSelectPicker,
     termHeight,
     termWidth,
@@ -107,9 +117,11 @@ export function useCommandBarPanelState({
     cellHeightPx,
     cellWidthPx,
     currentRoute,
+    hasRootFeedback,
     hasVisibleListState,
-    nativeListRows.length,
+    nativeListRows,
     nativePaneChrome,
+    nativeWindowChrome,
     showCustomMultiSelectPicker,
     termHeight,
     termWidth,
@@ -119,6 +131,19 @@ export function useCommandBarPanelState({
   const selectedListRowIndex = visibleListState
     ? listRowIndexByGlobalIndex.get(visibleListState.selectedIdx) ?? -1
     : -1;
+  const selectedIdx = visibleListState?.selectedIdx ?? 0;
+  const selectionMoveRef = useRef({ selectedIdx, movedDown: false });
+  if (selectionMoveRef.current.selectedIdx !== selectedIdx) {
+    selectionMoveRef.current = {
+      selectedIdx,
+      movedDown: selectedIdx > selectionMoveRef.current.selectedIdx,
+    };
+  }
+  const selectedScrollLineIndex = resolveSelectedScrollLine(
+    nativeListRows,
+    selectedListRowIndex,
+    selectionMoveRef.current.movedDown,
+  );
   const bodySlotKey = showCustomMultiSelectPicker
     ? "picker:field-multi-select"
     : themePickerActive
@@ -129,10 +154,9 @@ export function useCommandBarPanelState({
 
   return {
     bodySlotKey,
-    listRows,
     nativeListRows,
     panelLayout,
-    selectedScrollRowIndex: selectedListRowIndex,
+    selectedScrollRowIndex: selectedScrollLineIndex,
     visibleListState,
   };
 }
