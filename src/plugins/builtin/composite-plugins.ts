@@ -10,6 +10,7 @@ import { pluginMarketplaceModule } from "./plugin-marketplace";
 import { correlationModule } from "./correlation";
 import { cdsModule } from "./cds";
 import { creditConditionsModule } from "./credit-conditions";
+import { marketValuationModule } from "./market-valuation";
 import { economicCalendarModule } from "./econ";
 import { earningsModule } from "./earnings";
 import { earningsCallsModule } from "./earnings-calls";
@@ -33,13 +34,19 @@ import { treasuryAuctionsModule } from "./treasury-auctions";
 import { worldIndicesModule } from "./world-indices";
 import { worldVenueMapModule } from "./world-venue-map";
 import { yieldCurveModule } from "./yield-curve";
+import {
+  attachValuationPersistence,
+  resetValuationPersistence,
+} from "./market-valuation/cache";
 
 const macroSharedResourcesModule = {
   setup(ctx) {
     attachFredSeriesPersistence(ctx.persistence);
+    attachValuationPersistence(ctx.persistence);
   },
   dispose() {
     resetFredSeriesPersistence();
+    resetValuationPersistence();
   },
 } satisfies PluginModule;
 
@@ -102,6 +109,7 @@ export const macroPlugin = composeBuiltinPlugin({
     yieldCurveModule,
     volatilityModule,
     creditConditionsModule,
+    marketValuationModule,
     cdsModule,
     treasuryAuctionsModule,
     earningsModule,
