@@ -82,7 +82,8 @@ export function DataTable<T, C extends DataTableColumn = DataTableColumn>(
         props.onBodyScrollActivity();
       },
     },
-    metadata: {
+    getMetadata: () => ({
+      paneInstanceId: paneId,
       sortColumnId: props.sortColumnId,
       sortDirection: props.sortDirection,
       columns: props.columns.map((column) => ({ id: column.id, label: column.label })),
@@ -92,7 +93,7 @@ export function DataTable<T, C extends DataTableColumn = DataTableColumn>(
         selected: props.isSelected(item, index),
       })),
       rowCount: props.items.length,
-    },
+    }),
   });
   const HostDataTable = useUiHost().DataTable as
     | ComponentType<DataTableProps<T, C>>
