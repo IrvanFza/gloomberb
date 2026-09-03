@@ -5,6 +5,9 @@ import { CHART_COMPOSER_PANE_ID } from "../../types/config";
 import type { OptionsChain, PricePoint, TickerFinancials } from "../../types/financials";
 import type { TickerRecord } from "../../types/ticker";
 import { slugifyName } from "../../utils/slugify";
+import { getTheme, getThemeIds } from "../../theme/themes";
+
+const DEFAULT_SHOT_DEVICE_SCALE_FACTOR = 2;
 import {
   renderDesktopPaneScreenshot,
   type DesktopPaneShotPayload,
@@ -281,9 +284,20 @@ async function buildDesktopShotPayload(
   options: Record<string, string | true>,
   widthPx: number,
   heightPx: number,
+  theme: string | null,
+  scale: number,
+  watermark: string | null,
 ): Promise<DesktopPaneShotPayload> {
-  const widthCells = Math.max(1, Math.round(widthPx / DESKTOP_CELL_WIDTH_PX));
-  const heightCells = Math.max(1, Math.round(heightPx / DESKTOP_CELL_HEIGHT_PX));
+  // The requested size is the output size. Scale shrinks the CSS viewport and
+  // raises the device scale factor by the same factor, so a 1200px wide shot at
+  // scale 1.5 lays out 100 cells instead of 150 and every glyph is 1.5x larger.
+  // Snap to whole cells: rounding up used to make the pane a few pixels taller
+  // than the capture, which clipped the bottom axis of charts.
+  const widthCells = Math.max(1, Math.floor(widthPx / scale / DESKTOP_CELL_WIDTH_PX));
+  const heightCells = Math.max(1, Math.floor(heightPx / scale / DESKTOP_CELL_HEIGHT_PX));
+  widthPx = widthCells * DESKTOP_CELL_WIDTH_PX;
+  heightPx = heightCells * DESKTOP_CELL_HEIGHT_PX;
+  const deviceScaleFactor = DEFAULT_SHOT_DEVICE_SCALE_FACTOR * scale;
   const initialPaneState = optionPaneState(resolved.options);
   const pluginState = capabilityPluginState(resolved.capability, resolved.options);
   if (Object.keys(pluginState).length > 0) {
@@ -313,6 +327,7 @@ async function buildDesktopShotPayload(
   };
   const config = {
     ...context.config,
+    ...(theme ? { theme: resolveShotTheme(theme) } : {}),
     layout,
     layouts: [{
       name: "CLI Shot",
@@ -372,6 +387,8 @@ async function buildDesktopShotPayload(
     heightCells,
     widthPx,
     heightPx,
+    deviceScaleFactor,
+    watermark,
     tickers,
     financials,
     optionsChains,
@@ -381,6 +398,17 @@ async function buildDesktopShotPayload(
     capabilitySeries,
     paneState,
   };
+}
+
+function resolveShotTheme(requested: string): string {
+  const normalized = requested.trim().toLowerCase().replace(/[\s_]+/g, "-");
+  const ids = getThemeIds();
+  const match = ids.find((id) => id.toLowerCase() === normalized)
+    ?? ids.find((id) => getTheme(id).name.toLowerCase().replace(/[\s_]+/g, "-") === normalized);
+  if (!match) {
+    throw new Error(`Unknown theme "${requested}". Available themes: ${ids.join(", ")}`);
+  }
+  return match;
 }
 
 export function shotPriceHistoryRange(resolved: ResolvedPaneFunction): TimeRange | null {
@@ -411,6 +439,9 @@ export async function renderDesktopShot({
   outputPath,
   width,
   height,
+  theme,
+  scale,
+  watermark,
   options,
 }: {
   resolved: ResolvedPaneFunction;
@@ -419,10 +450,23 @@ export async function renderDesktopShot({
   outputPath: string;
   width: number;
   height: number;
+  theme?: string | null;
+  scale?: number;
+  watermark?: string | null;
   options: Record<string, string | true>;
 }): Promise<PaneScreenshotResult> {
   await mkdir(dirname(outputPath), { recursive: true });
-  const payload = await buildDesktopShotPayload(resolved, context, rawArg, options, width, height);
+  const payload = await buildDesktopShotPayload(
+    resolved,
+    context,
+    rawArg,
+    options,
+    width,
+    height,
+    theme ?? null,
+    scale ?? 1,
+    watermark ?? null,
+  );
   const render = await renderDesktopPaneScreenshot(payload, outputPath);
   const symbols = payload.financials.map(([symbol]) => symbol);
   const rowCount = shotSemanticRowCount(resolved, payload, render.semanticUi);
