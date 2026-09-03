@@ -17,6 +17,7 @@ import { DetachedPaneShell } from "./components/layout/detached-pane-shell";
 import { TransientLayoutProvider } from "./components/layout/transient-layout";
 import { CommandBar } from "./components/command-bar/surface";
 import { OnboardingWizard } from "./components/onboarding/onboarding-wizard";
+import { SignInGate } from "./components/sign-in-gate";
 import { useDialog } from "./ui/dialog";
 import { PluginRegistry } from "./plugins/registry";
 import type { LoadedExternalPlugin } from "./plugins/loader";
@@ -55,6 +56,7 @@ import { measurePerf } from "./utils/perf-marks";
 import { useAppLanguage } from "./i18n/react";
 import { AppLanguageConfigObserver } from "./app/language-observer";
 import { isPaneShareHandoff } from "./shares/location";
+import { apiClient } from "./api-client";
 
 const EMPTY_EXTERNAL_PLUGINS: LoadedExternalPlugin[] = [];
 
@@ -72,6 +74,8 @@ interface AppInnerProps {
   updatesEnabled?: boolean;
   onboardingActive?: boolean;
   onOnboardingComplete?: (config: AppConfig) => void | Promise<void>;
+  /** Hosted browser terminal: nothing is reachable until a session exists. */
+  signInGateActive?: boolean;
 }
 
 function ThemedAppRoot({ children }: { children: ReactNode }) {
@@ -106,6 +110,7 @@ function AppInner({
   updatesEnabled = true,
   onboardingActive = false,
   onOnboardingComplete,
+  signInGateActive = false,
 }: AppInnerProps) {
   const dispatch = useAppDispatch();
   const stateRef = useAppStateRef();
@@ -258,7 +263,10 @@ function AppInner({
     desktopDeepLinkBridge,
     desktopWindowKind: desktopWindowBridge?.kind,
     dispatch,
-    initialized: state.initialized,
+    // The browser bridge re-emits from the URL on subscribe and nothing rewrites
+    // it, so a `?layout=` / `?share=` intent survives the gate and lands once a
+    // session exists. Running it earlier would only 401 behind the scrim.
+    initialized: state.initialized && !signInGateActive,
     pluginRegistry,
     stateRef,
   });
@@ -303,7 +311,8 @@ function AppInner({
     // onboarding finishes, the normal pull-before-push sync starts immediately.
     initialized: state.initialized
       && desktopWindowBridge?.kind !== "detached"
-      && !onboardingActive,
+      && !onboardingActive
+      && !signInGateActive,
   });
 
   const persistConfig = useCallback((nextConfig: AppState["config"]) => {
@@ -414,6 +423,7 @@ function AppInner({
               onComplete={onOnboardingComplete}
             />
           ) : null}
+          {signInGateActive ? <SignInGate /> : null}
           {state.commandBarOpen && (
             <CommandBar
               dataProvider={dataProvider}
@@ -444,6 +454,11 @@ interface AppProps {
   desktopThemePreview?: DesktopThemePreviewState | null;
   remoteControlAdapter?: RemoteControlAdapter;
   updatesEnabled?: boolean;
+  /**
+   * Requires a Gloom Cloud session before the app is usable. The hosted browser
+   * terminal sets this; desktop and the TUI keep sign-in optional.
+   */
+  requireSignIn?: boolean;
 }
 
 export function App({
@@ -459,6 +474,7 @@ export function App({
   desktopThemePreview = null,
   remoteControlAdapter,
   updatesEnabled = true,
+  requireSignIn = false,
 }: AppProps) {
   useAppLanguage();
   const externalPlugins = providedExternalPlugins ?? EMPTY_EXTERNAL_PLUGINS;
@@ -483,6 +499,16 @@ export function App({
   const [config, setConfig] = useState(() => {
     return initialCliLaunch.config;
   });
+  // Only the surfaces that require a session subscribe, so desktop and the
+  // terminal keep their current render profile.
+  const [signedIn, setSignedIn] = useState(() => !requireSignIn || apiClient.isSignedIn());
+  useEffect(() => {
+    if (!requireSignIn) return;
+    const sync = () => setSignedIn(apiClient.isSignedIn());
+    sync();
+    return apiClient.subscribeCurrentUser(sync);
+  }, [requireSignIn]);
+  const signInGateActive = requireSignIn && !signedIn;
   const shareHandoff = isPaneShareHandoff();
   const [showOnboarding, setShowOnboarding] = useState(() => (
     desktopWindowBridge?.kind !== "detached"
@@ -544,6 +570,7 @@ export function App({
           remoteControlAdapter={remoteControlAdapter}
           updatesEnabled={updatesEnabled}
           onboardingActive={showOnboarding}
+          signInGateActive={signInGateActive}
           onOnboardingComplete={(updatedConfig) => {
             setConfig(updatedConfig);
             setShowOnboarding(false);
